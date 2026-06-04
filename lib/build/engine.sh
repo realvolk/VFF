@@ -1,0 +1,249 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Volk's Forge Framework – Build engine
+# Requires: VFF core, state, recipe, flags, deps, queue, cache, validate, TUI,
+# and a package backend that provides pkg_install, pkg_install_local, pkg_chroot.
+
+VFF_BUILD_DIR="${VFF_BUILD_DIR:-${VFF_TARGET:-/mnt}/var/cache/vff/build}"
+SOURCES_DIR="${VFF_BUILD_DIR}/sources"
+WORK_DIR="${VFF_BUILD_DIR}/work"
+ARTIFACTS_DIR="${VFF_BUILD_DIR}/artifacts"
+LOGS_DIR="${VFF_BUILD_DIR}/logs"
+VFF_DB_DIR="${VFF_DB_DIR:-${VFF_BUILD_DIR}/db}"
+mkdir -p "${SOURCES_DIR}" "${WORK_DIR}" "${ARTIFACTS_DIR}" "${LOGS_DIR}" "${VFF_DB_DIR}"
+
+# @brief Build a package from a recipe
+build_package() {
+    local recipe_name="${1}"
+    local log_file="${LOGS_DIR}/${recipe_name}.log"
+    local start_time end_time duration
+
+    load_recipe "${recipe_name}"
+
+    local -a selected_features=()
+    local feature_var="VFF_FEATURES_${pkgname//-/_}"
+    local saved_features
+    saved_features="$(state_get "${feature_var}" "")"
+    if [[ -n "${saved_features}" ]]; then
+        read -ra selected_features <<< "${saved_features}"
+    fi
+    export selected_features
+
+    local flags_h
+    flags_h="$(flags_hash)"
+    if grep -q "^${pkgname}|${pkgver}-${pkgrel}|${flags_h}|" "${VFF_DB_DIR}/local.db" 2>/dev/null; then
+        log_info "${pkgname}-${pkgver} already built — skipping"
+        return 0
+    fi
+
+    validate_recipe "${recipe_name}"
+
+    log_info "Building ${pkgname}-${pkgver}"
+    start_time=$(date +%s)
+
+    if [[ ${#makedepends[@]} -gt 0 ]]; then
+        log_info "  Installing build dependencies: ${makedepends[*]}"
+        pkg_install "${makedepends[@]}" || { log_error "Failed installing deps"; return 1; }
+    fi
+
+    local pkg_work="${WORK_DIR}/${pkgname}"
+    rm -rf "${pkg_work}"
+    mkdir -p "${pkg_work}"
+    local PKG_DESTDIR="${pkg_work}/pkg"
+    mkdir -p "${PKG_DESTDIR}"
+    export BUILD_DIR="${pkg_work}"
+    export SOURCES_DIR PKG_DESTDIR
+
+    local has_skip=0
+    for src in "${sources[@]}"; do
+        local checksum="${src#*|}"; checksum="${checksum%%|*}"
+        [[ "${checksum}" == "SKIP" ]] && has_skip=1 && break
+    done
+    if [[ ${has_skip} -eq 1 ]]; then
+        log_warn "Some sources for ${pkgname} have no checksums — source integrity NOT verified"
+        if ! tui_yesno "Unverified Sources" "${pkgname} has sources without SHA256 checksums. Continue anyway?"; then
+            die "User aborted due to missing checksums"
+        fi
+    fi
+
+    log_info "Build started for ${pkgname} — tail -f ${LOGS_DIR}/${recipe_name}.log to watch"
+
+    if ! fetch_sources "${recipe_name}" >> "${log_file}" 2>&1; then
+        handle_build_failure "${recipe_name}" "${log_file}" "${pkg_work}"
+        return $?
+    fi
+
+    if declare -f prepare >/dev/null 2>&1; then
+        log_info "  Preparing ${pkgname}..."
+        if ! ( cd "${pkg_work}" && prepare ) >> "${log_file}" 2>&1; then
+            handle_build_failure "${recipe_name}" "${log_file}" "${pkg_work}"
+            return $?
+        fi
+    fi
+
+    if declare -f configure >/dev/null 2>&1; then
+        log_info "  Configuring ${pkgname}..."
+        if ! ( cd "${pkg_work}" && configure ) >> "${log_file}" 2>&1; then
+            handle_build_failure "${recipe_name}" "${log_file}" "${pkg_work}"
+            return $?
+        fi
+    fi
+
+    log_info "  Building ${pkgname}..."
+    if ! ( cd "${pkg_work}" && build ) >> "${log_file}" 2>&1; then
+        handle_build_failure "${recipe_name}" "${log_file}" "${pkg_work}"
+        return $?
+    fi
+
+    if declare -f check >/dev/null 2>&1; then
+        log_info "  Checking ${pkgname}..."
+        if ! ( cd "${pkg_work}" && check ) >> "${log_file}" 2>&1; then
+            log_warn "Check phase failed (non-fatal)"
+        fi
+    fi
+
+    log_info "  Packaging ${pkgname}..."
+    if ! ( cd "${pkg_work}" && package ) >> "${log_file}" 2>&1; then
+        handle_build_failure "${recipe_name}" "${log_file}" "${pkg_work}"
+        return $?
+    fi
+
+    log_info "  Installing ${pkgname}..."
+    if [[ "${pkgname}" == "linux-custom" ]]; then
+        mkdir -p "${VFF_TARGET}/boot" "${VFF_TARGET}/usr/lib/modules" "${VFF_TARGET}/etc/mkinitcpio.d"
+        cp -a "${PKG_DESTDIR}/boot/." "${VFF_TARGET}/boot/" 2>>"${log_file}" || {
+            log_error "Failed to copy kernel to ${VFF_TARGET}/boot"
+            handle_build_failure "${recipe_name}" "${log_file}" "${pkg_work}"
+            return 1
+        }
+        if [[ -d "${PKG_DESTDIR}/lib/modules" ]]; then
+            cp -a "${PKG_DESTDIR}/lib/modules/." "${VFF_TARGET}/usr/lib/modules/" 2>>"${log_file}" || true
+        fi
+        cat > "${VFF_TARGET}/etc/mkinitcpio.d/linux-custom.preset" <<'PRESET'
+ALL_config="/etc/mkinitcpio.conf"
+ALL_kver="/boot/vmlinuz-linux-custom"
+PRESETS=('default')
+default_config="/etc/mkinitcpio.conf"
+default_image="/boot/initramfs-linux-custom.img"
+PRESET
+    else
+        local artifact="${ARTIFACTS_DIR}/${pkgname}-${pkgver}-${pkgrel}-x86_64.pkg.tar.zst"
+        if ! ( cd "${PKG_DESTDIR}" && tar --zstd -cf "${artifact}" . 2>/dev/null ); then
+            log_error "Failed to create package archive"
+            handle_build_failure "${recipe_name}" "${log_file}" "${pkg_work}"
+            return 1
+        fi
+        if ! pkg_install_local "${artifact}"; then
+            log_error "Failed to install ${pkgname}"
+            rm -f "${artifact}"
+            handle_build_failure "${recipe_name}" "${log_file}" "${pkg_work}"
+            return 1
+        fi
+        rm -f "${artifact}"
+    fi
+
+    flags_h="$(flags_hash)"
+    printf '%s|%s-%s|%s|%s|%s\n' \
+        "${pkgname}" "${pkgver}" "${pkgrel}" "${flags_h}" "$(date -I)" "${selected_features[*]}" \
+        >> "${VFF_DB_DIR}/local.db"
+
+    end_time=$(date +%s)
+    duration=$((end_time - start_time))
+    printf '%s|%s|%d\n' "${pkgname}" "success" "${duration}" >> "${LOGS_DIR}/timing.log"
+    log_info "  ${pkgname} — done (${duration}s)"
+    return 0
+}
+
+# @brief Handle a build failure interactively
+handle_build_failure() {
+    local recipe_name="${1}" log="${2}" work_dir="${3}"
+    log_error "Build failed for ${recipe_name}. Check ${log}"
+
+    while true; do
+        local action
+        if [[ "${recipe_name}" == "linux" ]]; then
+            action=$(tui_menu "Build Failed" "${recipe_name} failed." \
+                "Retry" \
+                "Skip" \
+                "Debug shell" \
+                "Install binary kernel instead" \
+                "Abort") || action="Abort"
+        else
+            action=$(tui_menu "Build Failed" "${recipe_name} failed." \
+                "Retry" \
+                "Skip" \
+                "Debug shell" \
+                "Abort") || action="Abort"
+        fi
+
+        case "${action}" in
+            Retry)
+                log_info "Retrying ${recipe_name}..."
+                rm -rf "${work_dir}"
+                if build_package "${recipe_name}"; then return 0; fi
+                ;;
+            Skip)
+                log_warn "Skipping ${recipe_name}"
+                printf '%s|%s|%d\n' "${recipe_name}" "skipped" 0 >> "${LOGS_DIR}/timing.log"
+                return 0
+                ;;
+            "Debug shell")
+                log_info "Dropping to shell in ${work_dir}. Type 'exit' to return."
+                ( cd "${work_dir}" && bash )
+                ;;
+            "Install binary kernel instead")
+                log_info "Installing binary kernel as fallback..."
+                local kernel_choice kernel_pkg
+                kernel_choice="$(state_get KERNEL_CHOICE linux)"
+                case "${kernel_choice}" in
+                    linux)          kernel_pkg="linux" ;;
+                    linux-zen)      kernel_pkg="linux-zen" ;;
+                    linux-lts)      kernel_pkg="linux-lts" ;;
+                    linux-hardened) kernel_pkg="linux-hardened" ;;
+                    *)              kernel_pkg="linux" ;;
+                esac
+                pkg_install "${kernel_pkg}" "${kernel_pkg}-headers" || {
+                    log_error "Failed to install binary kernel"
+                    continue
+                }
+                log_info "Binary kernel ${kernel_pkg} installed as fallback"
+                state_set KEEP_BINARY_KERNEL "yes"
+                printf '%s|%s|%d\n' "${recipe_name}" "binary-fallback" 0 >> "${LOGS_DIR}/timing.log"
+                return 0
+                ;;
+            Abort) die "Build aborted by user" ;;
+        esac
+    done
+}
+
+# @brief Download and verify source files for a recipe
+fetch_sources() {
+    local recipe_name="${1}"
+    load_recipe "${recipe_name}"
+
+    for src in "${sources[@]}"; do
+        local url checksum filename
+        url="${src%%|*}"
+        checksum="${src#*|}"; checksum="${checksum%%|*}"
+        filename="${src##*|}"
+
+        local dest="${SOURCES_DIR}/${filename}"
+        if [[ -f "${dest}" ]]; then
+            local actual
+            actual="$(sha256sum "${dest}" | cut -d' ' -f1)"
+            if [[ "${actual}" == "${checksum}" ]]; then continue; fi
+        fi
+
+        log_info "  Fetching ${filename}..."
+        curl_resume "${url}" "${dest}" || { log_error "Download failed: ${url}"; return 1; }
+
+        if [[ -n "${checksum}" && "${checksum}" != "SKIP" ]]; then
+            local actual
+            actual="$(sha256sum "${dest}" | cut -d' ' -f1)"
+            [[ "${actual}" == "${checksum}" ]] || { log_error "Checksum mismatch: ${filename}"; return 1; }
+        elif [[ "${checksum}" == "SKIP" ]]; then
+            log_warn "Checksum verification SKIPPED for ${filename} — source integrity NOT verified"
+        fi
+    done
+}

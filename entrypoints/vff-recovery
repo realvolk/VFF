@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+VFF_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "${VFF_DIR}/lib/core.sh"
+vff_source_all
+source "${VFF_DIR}/profiles/artix.sh"   # or whichever profile is needed
+
+# 1. Mount
+if ! mountpoint -q /mnt; then
+    tui_msg "Recovery" "No installation found at /mnt."
+    if tui_yesno "Auto-mount" "Attempt automatic detection and mount?"; then
+        source "${VFF_DIR}/lib/recovery/mount.sh"
+        recovery_mount_all
+    else
+        die "Recovery cancelled."
+    fi
+fi
+
+# 2. Detect
+source "${VFF_DIR}/lib/recovery/detect.sh"
+recovery_import_state   # calls detect_* and reconstruct_state_from_system
+local status=$(recovery_get_status)
+
+# 3. Menu
+while true; do
+    local choice
+    choice=$(tui_menu "Recovery Options" "${status}" \
+        "View system status" \
+        "Repair detected issues" \
+        "Repair filesystem" \
+        "Full reinstall" \
+        "Quit")
+    case "${choice}" in
+        "Repair detected issues") repair_detected_issues ;;
+        "Repair filesystem")     repair_filesystem ;;
+        "Full reinstall")        run_pipeline ;;
+        *) exit 0 ;;
+    esac
+done

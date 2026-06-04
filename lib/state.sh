@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Volk's Forge Framework – key/value state persistence
+# The state file is stored at ${VFF_STATE_FILE} (default /tmp/vff-installer/state.conf).
+# All stage markers and logs live under ${VFF_STATE_ROOT} (default /tmp/vff-installer).
+
+readonly VFF_STATE_ROOT="${VFF_STATE_ROOT:-/tmp/vff-installer}"
+readonly VFF_STATE_FILE="${VFF_STATE_FILE:-${VFF_STATE_ROOT}/state.conf}"
+readonly VFF_STAGE_DIR="${VFF_STAGE_DIR:-${VFF_STATE_ROOT}/stages}"
+readonly VFF_LOG_DIR="${VFF_LOG_DIR:-${VFF_STATE_ROOT}/logs}"
+
+ensure_state_dirs() {
+    mkdir -p "${VFF_STATE_ROOT}" "${VFF_STAGE_DIR}" "${VFF_LOG_DIR}"
+}
+
+state_save() {
+    ensure_state_dirs
+    {
+        printf 'DISK=%q\n'               "${DISK:-}"
+        printf 'FS_TYPE=%q\n'            "${FS_TYPE:-}"
+        printf 'INIT=%q\n'               "${INIT:-}"
+        printf 'USE_LUKS=%q\n'           "${USE_LUKS:-no}"
+        printf 'LUKS_PASS=%q\n'          "${LUKS_PASS:-}"
+        printf 'USE_LVM=%q\n'            "${USE_LVM:-no}"
+        printf 'GENERATE_UKI=%q\n'       "${GENERATE_UKI:-no}"
+        printf 'BOOTLOADER=%q\n'         "${BOOTLOADER:-}"
+        printf 'DISPLAY_MANAGER=%q\n'    "${DISPLAY_MANAGER:-none}"
+        printf 'AUDIO_STACK=%q\n'        "${AUDIO_STACK:-pipewire}"
+        printf 'SWAP_ENABLED=%q\n'       "${SWAP_ENABLED:-no}"
+        printf 'SWAP_SIZE=%q\n'          "${SWAP_SIZE:-0}"
+        printf 'EXTRAS=%q\n'             "${EXTRAS:-}"
+        printf 'KERNEL_CHOICE=%q\n'      "${KERNEL_CHOICE:-}"
+        printf 'HOSTNAME=%q\n'           "${HOSTNAME:-vff}"
+        printf 'TIMEZONE=%q\n'           "${TIMEZONE:-UTC}"
+        printf 'LOCALE=%q\n'             "${LOCALE:-en_US.UTF-8}"
+        printf 'KEYMAP=%q\n'             "${KEYMAP:-us}"
+        printf 'BTRFS_LAYOUT=%q\n'       "${BTRFS_LAYOUT:-standard}"
+        printf 'WM_DE=%q\n'              "${WM_DE:-}"
+        printf 'USER_NAME=%q\n'          "${USER_NAME:-}"
+        printf 'USER_PASS=%q\n'          "${USER_PASS:-}"
+        printf 'ROOT_PASS=%q\n'          "${ROOT_PASS:-}"
+        printf 'USER_SHELL=%q\n'         "${USER_SHELL:-/bin/bash}"
+        printf 'PRIV_ESCALATION=%q\n'    "${PRIV_ESCALATION:-sudo}"
+        printf 'NETWORK_STACK=%q\n'      "${NETWORK_STACK:-}"
+        printf 'X_STACK=%q\n'            "${X_STACK:-xorg}"
+        printf 'EFI_PART=%q\n'           "${EFI_PART:-}"
+        printf 'ROOT_PART=%q\n'          "${ROOT_PART:-}"
+        printf 'SWAP_PART=%q\n'          "${SWAP_PART:-}"
+        printf 'INSTALL_MODE=%q\n'       "${INSTALL_MODE:-auto}"
+    } > "${VFF_STATE_FILE}"
+    chmod 600 "${VFF_STATE_FILE}"
+}
+
+state_load() {
+    [[ -f "${VFF_STATE_FILE}" ]] || return 0
+    source "${VFF_STATE_FILE}"
+}
+
+state_get() {
+    local key="${1}" default="${2:-}"
+    printf '%s\n' "${!key:-${default}}"
+}
+
+state_set() {
+    ensure_state_dirs
+    local key="${1}" value="${2}"
+    export "${key}=${value}"
+    local tmpfile="${VFF_STATE_FILE}.tmp.$$"
+    if [[ -f "${VFF_STATE_FILE}" ]]; then
+        while IFS= read -r line; do
+            if [[ "${line}" =~ ^${key}= ]]; then
+                printf '%s=%q\n' "${key}" "${value}" >> "${tmpfile}"
+            else
+                printf '%s\n' "${line}" >> "${tmpfile}"
+            fi
+        done < "${VFF_STATE_FILE}"
+    else
+        : > "${tmpfile}"
+    fi
+    if ! grep -qE "^${key}=" "${VFF_STATE_FILE}" 2>/dev/null; then
+        printf '%s=%q\n' "${key}" "${value}" >> "${tmpfile}"
+    fi
+    mv "${tmpfile}" "${VFF_STATE_FILE}"
+}
+
+stage_mark_done()   { ensure_state_dirs; touch "${VFF_STAGE_DIR}/${1}.done"; }
+stage_is_done()     { [[ -f "${VFF_STAGE_DIR}/${1}.done" ]]; }
+stage_reset()       { rm -f "${VFF_STAGE_DIR}/${1}.done"; }
+stage_reset_all()   { rm -f "${VFF_STAGE_DIR}"/*.done; }
+stage_log_path()    { ensure_state_dirs; printf '%s/%s.log\n' "${VFF_LOG_DIR}" "${1}"; }
+
+stage_should_skip() {
+    local stage="${1}"
+    if ! stage_is_done "${stage}"; then
+        return 1
+    fi
+    printf '[*] %s stage already completed. Skipping...\n' "${stage^}"
+    return 0
+}
