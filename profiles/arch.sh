@@ -19,6 +19,11 @@ VFF_NETWORK_HOOK="setup_arch_network"
 VFF_FINALIZE_HOOK="arch_post_install"
 VFF_REQUIRED_TOOLS="sgdisk partprobe mount lsblk wipefs"
 
+# --- UKI support ---
+UKI_SUPPORTED="yes"
+UKI_BINARY="ukify"
+UKI_PACKAGE="systemd-ukify"
+
 # --- Base packages ---
 BASE_PACKAGES=(
     base base-devel linux linux-firmware linux-headers

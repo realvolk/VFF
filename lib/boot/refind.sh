@@ -22,6 +22,12 @@ configure_refind() {
         die 'No initramfs image was created'
     fi
 
+    # UKI generation (if enabled) — must run after initramfs exists
+    if [[ "$(state_get GENERATE_UKI no)" == "yes" ]]; then
+        source "${VFF_DIR}/lib/boot/uki.sh"
+        generate_uki "${esp_mount}"
+    fi
+
     local root_uuid
     root_uuid="$(blkid -s UUID -o value "$(findmnt -rn -o SOURCE --target /mnt | sed 's/\[.*\]//')")"
 

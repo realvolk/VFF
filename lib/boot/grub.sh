@@ -35,6 +35,12 @@ configure_grub() {
     fi
     log_info "Initramfs generation complete"
 
+    # UKI generation (if enabled) — must run after initramfs exists
+    if [[ "$(state_get GENERATE_UKI no)" == "yes" ]]; then
+        source "${VFF_DIR}/lib/boot/uki.sh"
+        generate_uki "${esp_mount}"
+    fi
+
     # Detect root device
     local root_device
     root_device=$(${CHROOT_CMD} /mnt findmnt -n -o SOURCE /) || true
