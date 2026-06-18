@@ -2,28 +2,32 @@
 set -Eeuo pipefail
 
 # Volk's Forge Framework – System detection for recovery mode
-# Uses pkg_query from the loaded package backend instead of pacman-specific calls.
-
+# Uses pkg_query from the loaded package backend.
 readonly ROOT="/mnt"
 
+# @brief Detect installed init system by checking binaries
 detect_init() {
-    if [[ -d "${ROOT}/etc/runit" ]]; then state_set INIT runit
-    elif [[ -d "${ROOT}/etc/dinit.d" ]]; then state_set INIT dinit
-    elif [[ -d "${ROOT}/etc/s6" ]]; then state_set INIT s6
+    if [[ -x "${ROOT}/usr/bin/runit" ]]; then state_set INIT runit
+    elif [[ -x "${ROOT}/usr/bin/dinit" ]]; then state_set INIT dinit
+    elif [[ -x "${ROOT}/usr/bin/s6-rc" ]]; then state_set INIT s6
+    elif [[ -x "${ROOT}/usr/bin/openrc" ]]; then state_set INIT openrc
     else state_set INIT openrc; fi
 }
 
+# @brief Detect root filesystem type
 detect_filesystem() {
     local fs="$(findmnt -no FSTYPE "${ROOT}" 2>/dev/null || true)"
     state_set FS_TYPE "${fs:-ext4}"
 }
 
+# @brief Check for ZFS installation
 detect_zfs() {
     if pkg_query zfs-utils || pkg_query zfs-dkms; then
         state_set FS_TYPE zfs
     fi
 }
 
+# @brief Detect LVM usage
 detect_lvm() {
     if [[ -f "${ROOT}/etc/lvm/lvm.conf" ]] || pkg_query lvm2; then
         state_set USE_LVM yes
@@ -32,6 +36,7 @@ detect_lvm() {
     fi
 }
 
+# @brief Identify the bootloader from filesystem artifacts
 detect_bootloader() {
     if [[ -d "${ROOT}/boot/grub" ]] || [[ -f "${ROOT}/boot/grub/grub.cfg" ]]; then
         state_set BOOTLOADER grub
@@ -44,95 +49,98 @@ detect_bootloader() {
     fi
 }
 
+# @brief Detect UKI presence
 detect_uki() {
     if [[ -f "${ROOT}/boot/efi/EFI/Artix/linux-custom.efi" ]] || \
        compgen -G "${ROOT}/boot/efi/EFI/Linux/"*.efi >/dev/null 2>&1 || \
-       grep -q 'uki' "${ROOT}/etc/mkinitcpio.d/"*.preset 2>/dev/null; then
+       grep -qE 'default_uki|uki_output' "${ROOT}/etc/mkinitcpio.d/"*.preset 2>/dev/null; then
         state_set GENERATE_UKI yes
     else
         state_set GENERATE_UKI no
     fi
 }
 
+# @brief Detect kernel version using tiered priority
 detect_kernel() {
     if [[ -f "${ROOT}/boot/vmlinuz-linux-custom" ]]; then
         state_set KERNEL_CHOICE linux-custom
         return 0
     fi
 
-    if pkg_query linux-zen; then
-        state_set KERNEL_CHOICE linux-zen
-    elif pkg_query linux-lts; then
-        state_set KERNEL_CHOICE linux-lts
-    elif pkg_query linux-hardened; then
-        state_set KERNEL_CHOICE linux-hardened
-    elif pkg_query linux-libre; then
-        state_set KERNEL_CHOICE linux-libre
-    elif pkg_query linux-cachyos-bore; then
-        state_set KERNEL_CHOICE linux-cachyos-bore
-    elif pkg_query linux-bazzite-bin; then
-        state_set KERNEL_CHOICE linux-bazzite-bin
-    elif pkg_query linux-xanmod-x64v4 || pkg_query linux-xanmod-x64v3 || \
-         pkg_query linux-xanmod-x64v2 || pkg_query linux-xanmod; then
-        state_set KERNEL_CHOICE xanmod
-    elif [[ -d "${ROOT}/opt/linux-tkg" ]] || pkg_query linux-tkg || pkg_query linux-tkg-bore; then
-        state_set KERNEL_CHOICE tkg
-    elif pkg_query linux; then
-        state_set KERNEL_CHOICE linux
-    else
-        local kver
-        kver=$(ls "${ROOT}/boot/vmlinuz-"* 2>/dev/null | head -n1 | sed 's/.*vmlinuz-//')
-        if [[ "${kver}" == *"zen"* ]]; then
-            state_set KERNEL_CHOICE linux-zen
-        elif [[ "${kver}" == *"lts"* ]]; then
-            state_set KERNEL_CHOICE linux-lts
-        elif [[ "${kver}" == *"hardened"* ]]; then
-            state_set KERNEL_CHOICE linux-hardened
-        else
-            state_set KERNEL_CHOICE linux
+    local -a tier1=(
+        linux-cachyos-bmq linux-cachyos-eevdf linux-cachyos-rt-bore
+        linux-cachyos-hardened linux-cachyos-lts linux-cachyos-server
+        linux-cachyos-deckify linux-cachyos-bore linux-cachyos
+        linux-xanmod-x64v4 linux-xanmod-x64v3 linux-xanmod-x64v2 linux-xanmod
+        linux-bazzite-bin linux-tkg linux-tkg-bore
+    )
+    for k in "${tier1[@]}"; do
+        if pkg_query "${k}"; then
+            state_set KERNEL_CHOICE "${k#linux-}"
+            return 0
         fi
+    done
+
+    local -a tier2=(linux-zen linux-lts linux-hardened linux-libre linux)
+    for k in "${tier2[@]}"; do
+        if pkg_query "${k}"; then
+            state_set KERNEL_CHOICE "${k#linux-}"
+            return 0
+        fi
+    done
+
+    if [[ -d "${ROOT}/opt/linux-tkg" ]]; then
+        state_set KERNEL_CHOICE tkg
+        return 0
     fi
+
+    local kver
+    kver=$(ls -1 "${ROOT}/boot/vmlinuz-"* 2>/dev/null | sort -V | head -n1 | sed 's/.*vmlinuz-//')
+    case "${kver}" in
+        *cachyos*)  state_set KERNEL_CHOICE linux-cachyos ;;
+        *zen*)      state_set KERNEL_CHOICE linux-zen ;;
+        *lts*)      state_set KERNEL_CHOICE linux-lts ;;
+        *hardened*) state_set KERNEL_CHOICE linux-hardened ;;
+        *)          state_set KERNEL_CHOICE linux ;;
+    esac
 }
 
+# @brief Detect desktop environment
 detect_desktop() {
-    if pkg_query mangowm; then
-        state_set WM_DE mango
-    elif pkg_query hyprland; then
-        state_set WM_DE hyprland
-    elif pkg_query niri; then
-        state_set WM_DE niri
-    elif pkg_query sway; then
-        state_set WM_DE sway
-    elif pkg_query xfce4; then
-        state_set WM_DE xfce4
-    elif pkg_query lxqt; then
-        state_set WM_DE lxqt
-    elif pkg_query lxde-common || pkg_query lxde; then
-        state_set WM_DE lxde
-    elif pkg_query i3-wm; then
-        state_set WM_DE i3wm
-    elif pkg_query dwm; then
-        state_set WM_DE dwm
-    elif pkg_query vxwm || [[ -f "${ROOT}/usr/local/bin/vxwm" ]]; then
-        state_set WM_DE vxwm
-    elif pkg_query icewm; then
-        state_set WM_DE icewm
-    elif pkg_query plasma-desktop; then
-        state_set WM_DE kde
-        if pkg_query kde-applications; then
-            state_set KDE_PROFILE full
-        elif pkg_query dolphin; then
-            state_set KDE_PROFILE minimal
-        else
-            state_set KDE_PROFILE desktop
+    local -A de_map=(
+        [mangowm]=mango [hyprland]=hyprland [niri]=niri [sway]=sway
+        [xfce4]=xfce4 [lxqt]=lxqt [i3-wm]=i3wm [dwm]=dwm [vxwm]=vxwm
+        [icewm]=icewm [sonicde-meta]=sonicde [plasma-desktop]=kde
+    )
+    for pkg in "${!de_map[@]}"; do
+        if pkg_query "${pkg}"; then
+            state_set WM_DE "${de_map[$pkg]}"
+            if [[ "${de_map[$pkg]}" == "kde" ]]; then
+                if pkg_query kde-applications; then
+                    state_set KDE_PROFILE full
+                elif pkg_query dolphin; then
+                    state_set KDE_PROFILE minimal
+                else
+                    state_set KDE_PROFILE desktop
+                fi
+            fi
+            return 0
         fi
+    done
+    if pkg_query lxde-common || pkg_query lxde; then
+        state_set WM_DE lxde
+    elif [[ -f "${ROOT}/usr/local/bin/vxwm" ]]; then
+        state_set WM_DE vxwm
     else
         state_set WM_DE none
     fi
 }
 
+# @brief Detect display manager
 detect_display_manager() {
-    if pkg_query sddm; then
+    if pkg_query sonic-login-manager; then
+        state_set DISPLAY_MANAGER soniclogin
+    elif pkg_query sddm; then
         state_set DISPLAY_MANAGER sddm
     elif pkg_query lightdm; then
         state_set DISPLAY_MANAGER lightdm
@@ -141,6 +149,7 @@ detect_display_manager() {
     fi
 }
 
+# @brief Detect X stack (xlibre/Xorg/Wayland)
 detect_xstack() {
     if pkg_query xlibre-xserver; then
         state_set X_STACK xlibre
@@ -151,6 +160,7 @@ detect_xstack() {
     fi
 }
 
+# @brief Detect seat manager (seatd vs elogind)
 detect_seat_manager() {
     if pkg_query seatd; then
         state_set SEAT_MANAGER seatd
@@ -159,6 +169,7 @@ detect_seat_manager() {
     fi
 }
 
+# @brief Detect active network stack
 detect_network_stack() {
     if pkg_query networkmanager; then
         state_set NETWORK_STACK networkmanager
@@ -171,6 +182,7 @@ detect_network_stack() {
     fi
 }
 
+# @brief Detect audio stack
 detect_audio_stack() {
     if pkg_query pipewire; then
         state_set AUDIO_STACK pipewire
@@ -181,6 +193,7 @@ detect_audio_stack() {
     fi
 }
 
+# @brief Detect CPU microcode package
 detect_ucode() {
     if pkg_query intel-ucode; then
         state_set CPU_UCODE intel
@@ -191,55 +204,31 @@ detect_ucode() {
     fi
 }
 
+# @brief Detect user shell from /etc/passwd
 detect_user_shell() {
     local shell
     shell="$(awk -F: '$3 >= 1000 && $1 != "nobody" {print $7; exit}' "${ROOT}/etc/passwd" 2>/dev/null || true)"
     shell="${shell##*/}"
-    case "${shell}" in
-        bash|zsh|fish) ;;
-        *) shell='bash' ;;
-    esac
+    case "${shell}" in bash|zsh|fish) ;; *) shell='bash' ;; esac
     state_set USER_SHELL "${shell}"
 }
 
+# @brief Detect installed extra packages
 detect_extras() {
     local extras=()
-    pkg_query git && extras+=(git)
-    pkg_query flatpak && extras+=(flatpak)
-    pkg_query fastfetch && extras+=(fastfetch)
-    pkg_query firewalld && extras+=(firewalld)
-    pkg_query bluez && extras+=(bluez)
-    if pkg_query zram-generator || pkg_query zramen; then
-        extras+=(zram-tools)
-    fi
-    pkg_query fzf && extras+=(fzf)
-    pkg_query zoxide && extras+=(zoxide)
-    pkg_query starship && extras+=(starship)
-    pkg_query eza && extras+=(eza)
-    pkg_query btop && extras+=(btop)
-    pkg_query htop && extras+=(htop)
-    pkg_query nvtop && extras+=(nvtop)
-    pkg_query tmux && extras+=(tmux)
-    pkg_query nano && extras+=(nano)
-    pkg_query vim && extras+=(vim)
-    pkg_query neovim && extras+=(neovim)
-    pkg_query micro && extras+=(micro)
-    pkg_query helix && extras+=(helix)
-    pkg_query firefox && extras+=(firefox)
-    pkg_query chromium && extras+=(chromium)
-    pkg_query qutebrowser && extras+=(qutebrowser)
-    pkg_query ranger && extras+=(ranger)
-    pkg_query lf && extras+=(lf)
-    pkg_query nnn && extras+=(nnn)
-    pkg_query thunar && extras+=(thunar)
-    pkg_query alacritty && extras+=(alacritty)
-    pkg_query kitty && extras+=(kitty)
-    pkg_query foot && extras+=(foot)
-    pkg_query mpv && extras+=(mpv)
-    pkg_query feh && extras+=(feh)
+    local -a pkg_list=(
+        git flatpak fastfetch firewalld bluez fzf zoxide starship eza btop htop nvtop tmux
+        nano vim neovim micro helix firefox chromium qutebrowser ranger lf nnn thunar
+        alacritty kitty foot mpv feh
+    )
+    for pkg in "${pkg_list[@]}"; do
+        pkg_query "${pkg}" && extras+=("${pkg}")
+    done
+    if pkg_query zram-generator || pkg_query zramen; then extras+=(zram-tools); fi
     state_set EXTRAS "${extras[*]}"
 }
 
+# @brief Detect if Arch repositories are enabled
 detect_repositories() {
     if grep -Eq '^\[(core|extra|multilib)\]' "${ROOT}/etc/pacman.conf" 2>/dev/null; then
         state_set ENABLE_ARCH_REPOS yes
@@ -253,6 +242,7 @@ detect_repositories() {
     fi
 }
 
+# @brief Detect primary username
 detect_username() {
     local user
     user="$(awk -F: '$3 >= 1000 && $1 != "nobody" {print $1; exit}' "${ROOT}/etc/passwd" 2>/dev/null || true)"
@@ -260,71 +250,61 @@ detect_username() {
     state_set USER_NAME "${user}"
 }
 
+# @brief Detect LUKS encryption by walking device mapper
 detect_luks() {
     local source parent
     source="$(findmnt -no SOURCE "${ROOT}" 2>/dev/null || true)"
     [[ -n "${source}" ]] || return 0
-    
     local check_dev="${source}"
     while [[ -n "${check_dev}" ]]; do
         if cryptsetup isLuks "${check_dev}" &>/dev/null; then
-            state_set USE_LUKS yes
-            return 0
+            state_set USE_LUKS yes; return 0
         fi
         parent="$(lsblk -no PKNAME "${check_dev}" 2>/dev/null || true)"
         [[ -n "${parent}" ]] && check_dev="/dev/${parent}" || break
     done
-    
-    local mapper_dev
     for mapper_dev in /dev/mapper/*; do
         [[ -b "${mapper_dev}" ]] || continue
         if cryptsetup isLuks "${mapper_dev}" &>/dev/null; then
-            state_set USE_LUKS yes
-            return 0
+            state_set USE_LUKS yes; return 0
         fi
     done
-    
     state_set USE_LUKS no
 }
 
+# @brief Detect installation disk from mountpoint and fstab
 detect_disk() {
     local source pkname disk candidate
     source="$(findmnt -no SOURCE "${ROOT}" 2>/dev/null || true)"
     [[ -n "${source}" ]] || return 0
-
     if [[ "${source}" == /dev/mapper/* ]]; then
         pkname="$(lsblk -no PKNAME "${source}" 2>/dev/null || true)"
         [[ -n "${pkname}" ]] && source="/dev/${pkname}"
     fi
-
     candidate="${source}"
     while [[ -n "${candidate}" ]]; do
         disk="$(lsblk -no PKNAME "${candidate}" 2>/dev/null || true)"
         if [[ -z "${disk}" ]]; then break; fi
         candidate="/dev/${disk}"
     done
-
     if [[ -b "${candidate}" ]]; then
-        state_set DISK "${candidate}"
-        log_info "Detected installation disk: ${candidate}"
-        return 0
+        state_set DISK "${candidate}"; log_info "Detected installation disk: ${candidate}"; return 0
     fi
-
     local fstab_root
     fstab_root="$(awk '$2 == "/" {print $1}' "${ROOT}/etc/fstab" 2>/dev/null | head -n1)"
     if [[ "${fstab_root}" == UUID=* ]]; then
         candidate="$(blkid -U "${fstab_root#UUID=}" 2>/dev/null || true)"
         [[ -b "${candidate}" ]] && { state_set DISK "${candidate}"; log_info "Detected disk from fstab UUID: ${candidate}"; return 0; }
     fi
-
     log_warn "Could not auto-detect installation disk."
-    if tui_yesno "Disk Detection" "Automatic disk detection failed. Would you like to select the installation disk manually?"; then
+    if tui_yesno "Disk Detection" "Select installation disk manually?"; then
         tui_select_disk
     else
         die "Cannot continue without a valid installation disk."
     fi
 }
 
+# @brief Detect display protocol (Wayland/X11)
 detect_display_protocol() {
     if [[ -d "${ROOT}/usr/share/wayland-sessions" ]]; then
         state_set DISPLAY_PROTOCOL wayland
@@ -333,30 +313,29 @@ detect_display_protocol() {
     fi
 }
 
+# @brief Detect NVIDIA GPU driver
 detect_nvidia() {
     if pkg_query nvidia || pkg_query nvidia-dkms || pkg_query nvidia-open; then
         state_set GPU_DRIVER nvidia
     fi
 }
 
+# @brief Detect virtualization guest tools
 detect_virtualization() {
-    if pkg_query qemu-guest-agent; then
-        state_set VM_GUEST qemu
-    elif pkg_query virtualbox-guest-utils; then
-        state_set VM_GUEST virtualbox
-    elif pkg_query open-vm-tools; then
-        state_set VM_GUEST vmware
-    else
-        state_set VM_GUEST none
-    fi
+    if pkg_query qemu-guest-agent; then state_set VM_GUEST qemu
+    elif pkg_query virtualbox-guest-utils; then state_set VM_GUEST virtualbox
+    elif pkg_query open-vm-tools; then state_set VM_GUEST vmware
+    else state_set VM_GUEST none; fi
 }
 
+# @brief Read hostname from target
 detect_hostname() {
     local hostname='vff'
     [[ -f "${ROOT}/etc/hostname" ]] && hostname="$(tr -d '[:space:]' < "${ROOT}/etc/hostname")"
     state_set HOSTNAME "${hostname}"
 }
 
+# @brief Detect coreutils implementation (GNU/BusyBox/uutils)
 detect_coreutils() {
     if pkg_query busybox && [[ "$(readlink "${ROOT}/usr/bin/ls" 2>/dev/null)" == *"busybox"* ]]; then
         state_set COREUTILS busybox
@@ -367,13 +346,12 @@ detect_coreutils() {
     fi
 }
 
+# @brief Detect if Power User mode was used
 detect_poweruser() {
-    # Generic check: any source-built package database indicates Power User mode
     if [[ -f "${ROOT}/etc/vff/world.txt" ]] || [[ -f "${ROOT}/usr/local/bin/vff-build" ]]; then
         state_set POWER_USER yes
         if [[ -f "${ROOT}/etc/vff/world.txt" ]]; then
-            local pkgs
-            pkgs=$(tr '\n' ' ' < "${ROOT}/etc/vff/world.txt")
+            local pkgs=$(tr '\n' ' ' < "${ROOT}/etc/vff/world.txt")
             state_set POWERUSER_PACKAGES "${pkgs}"
         fi
     else
@@ -381,6 +359,7 @@ detect_poweruser() {
     fi
 }
 
+# @brief Detect privilege escalation method (sudo/doas)
 detect_priv_escalation() {
     if pkg_query doas && [[ -f "${ROOT}/etc/doas.conf" ]]; then
         state_set PRIV_ESCALATION doas
@@ -391,6 +370,7 @@ detect_priv_escalation() {
     fi
 }
 
+# @brief Determine how far the installation progressed
 detect_install_stage() {
     local status=""
     [[ -f "${ROOT}/etc/fstab" ]] && status+="fstab "
@@ -403,20 +383,18 @@ detect_install_stage() {
     [[ -f "${ROOT}/etc/hostname" ]] && status+="hostname "
     [[ -f "${ROOT}/etc/locale.conf" ]] && status+="locale "
     [[ -f "${ROOT}/root/.vff-post-complete" ]] && status+="post-complete "
-    if pkg_query xfce4 || pkg_query plasma-desktop || pkg_query hyprland; then
-        status+="desktop "
-    fi
+    if pkg_query xfce4 || pkg_query plasma-desktop || pkg_query hyprland; then status+="desktop "; fi
     [[ -z "${status}" ]] && status="minimal (base system only)"
     state_set RECOVERY_STATUS "${status}"
 }
 
+# @brief Verify fstab integrity
 detect_fstab_health() {
     if [[ -f "${ROOT}/etc/fstab" ]]; then
         local issues=""
         while IFS= read -r line; do
             [[ -z "${line}" || "${line}" == \#* ]] && continue
-            local device
-            device=$(echo "${line}" | awk '{print $1}')
+            local device=$(echo "${line}" | awk '{print $1}')
             if [[ "${device}" == UUID=* ]]; then
                 local uuid="${device#UUID=}"
                 if ! blkid -U "${uuid}" &>/dev/null; then
@@ -430,77 +408,47 @@ detect_fstab_health() {
     fi
 }
 
+# @brief Check boot health (kernel, initramfs, init symlink, bootloader config)
 detect_boot_health() {
     local issues=""
     if [[ -d "${ROOT}/boot" ]]; then
-        if ! ls "${ROOT}/boot/vmlinuz-"* &>/dev/null; then
-            issues+="no-kernel "
-        fi
-        if ! ls "${ROOT}/boot/initramfs-"*.img &>/dev/null; then
-            issues+="no-initramfs "
-        fi
+        if ! ls "${ROOT}/boot/vmlinuz-"* &>/dev/null; then issues+="no-kernel "; fi
+        if ! ls "${ROOT}/boot/initramfs-"*.img &>/dev/null; then issues+="no-initramfs "; fi
     else
         issues+="no-boot-dir "
     fi
-
+    if [[ ! -e "${ROOT}/sbin/init" ]]; then issues+="no-init "; fi
     if [[ "$(state_get GENERATE_UKI no)" == "yes" ]]; then
         if ! compgen -G "${ROOT}/boot/efi/EFI/Linux/"*.efi >/dev/null 2>&1 && \
            ! [[ -f "${ROOT}/boot/efi/EFI/Artix/linux-custom.efi" ]]; then
             issues+="no-uki "
         fi
     fi
-
     if command -v efibootmgr &>/dev/null; then
         if ! efibootmgr 2>/dev/null | grep -qi 'Artix\|Linux\|VFF'; then
             issues+="no-efi-entry "
         fi
     fi
-
     if [[ "$(state_get USE_LUKS no)" == "yes" ]]; then
-        local cmdline_missing=0
-        local bootloader
-        bootloader=$(state_get BOOTLOADER grub)
-
+        local cmdline_missing=0 bootloader="$(state_get BOOTLOADER grub)"
         case "${bootloader}" in
             grub)
-                if [[ -f "${ROOT}/boot/grub/grub.cfg" ]]; then
-                    grep -q 'cryptdevice=' "${ROOT}/boot/grub/grub.cfg" || cmdline_missing=1
-                else
-                    cmdline_missing=1
-                fi
-                ;;
+                [[ -f "${ROOT}/boot/grub/grub.cfg" ]] && grep -q 'cryptdevice=' "${ROOT}/boot/grub/grub.cfg" || cmdline_missing=1 ;;
             limine)
-                local limine_conf
-                limine_conf="${ROOT}/boot/efi/limine.conf"
-                [[ -f "${ROOT}/boot/limine.conf" ]] && limine_conf="${ROOT}/boot/limine.conf"
-                if [[ -f "${limine_conf}" ]]; then
-                    grep -q 'cryptdevice=' "${limine_conf}" || cmdline_missing=1
-                else
-                    cmdline_missing=1
-                fi
-                ;;
+                local conf="${ROOT}/boot/efi/limine.conf"; [[ -f "${ROOT}/boot/limine.conf" ]] && conf="${ROOT}/boot/limine.conf"
+                [[ -f "${conf}" ]] && grep -q 'cryptdevice=' "${conf}" || cmdline_missing=1 ;;
             refind)
-                if [[ -f "${ROOT}/boot/refind_linux.conf" ]]; then
-                    grep -q 'cryptdevice=' "${ROOT}/boot/refind_linux.conf" || cmdline_missing=1
-                else
-                    cmdline_missing=1
-                fi
-                ;;
-            efistub) ;;
+                [[ -f "${ROOT}/boot/refind_linux.conf" ]] && grep -q 'cryptdevice=' "${ROOT}/boot/refind_linux.conf" || cmdline_missing=1 ;;
         esac
-
-        if [[ ${cmdline_missing} -eq 1 ]]; then
-            issues+="missing-cryptdevice "
-        fi
-
+        [[ ${cmdline_missing} -eq 1 ]] && issues+="missing-cryptdevice "
         if [[ -f "${ROOT}/etc/mkinitcpio.conf" ]]; then
             grep -q 'encrypt' "${ROOT}/etc/mkinitcpio.conf" || issues+="missing-encrypt-hook "
         fi
     fi
-
     state_set BOOT_ISSUES "${issues:-none}"
 }
 
+# @brief Check package manager health
 detect_pkg_health() {
     local issues=""
     if [[ -f "${ROOT}/var/lib/pacman/db.lck" ]] || [[ -f "${ROOT}/var/lib/dpkg/lock-frontend" ]] || [[ -f "${ROOT}/var/lib/zypp/lock" ]]; then
@@ -509,13 +457,10 @@ detect_pkg_health() {
     if ! pkg_query base 2>/dev/null && ! pkg_query base-system 2>/dev/null && ! pkg_query filesystem 2>/dev/null; then
         issues+="base-missing "
     fi
-    # Generic broken package detection: try the native package manager's verify
     if command -v pacman &>/dev/null; then
-        local broken
-        broken=$(pacman --root "${ROOT}" -Qk 2>/dev/null | grep ': missing' | cut -d: -f1 | sort -u | tr '\n' ' ') || true
+        local broken=$(pacman --root "${ROOT}" -Qk 2>/dev/null | grep ': missing' | cut -d: -f1 | sort -u | tr '\n' ' ') || true
         if [[ -n "${broken}" ]]; then
-            local count
-            count=$(echo "${broken}" | wc -w)
+            local count=$(echo "${broken}" | wc -w)
             issues+="broken-pkgs:${count} "
             state_set BROKEN_PACKAGES "${broken}"
         fi
@@ -523,50 +468,27 @@ detect_pkg_health() {
     state_set PKG_ISSUES "${issues:-none}"
 }
 
-# Reconstruct full system state from the mounted installation
+# @brief Reconstruct full system state from mounted installation
 reconstruct_state_from_system() {
     validate_recovery_root
-
-    detect_disk
-    detect_init
-    detect_filesystem
-    detect_zfs
-    detect_lvm
-    detect_bootloader
-    detect_uki
-    detect_kernel
-    detect_desktop
-    detect_display_manager
-    detect_xstack
-    detect_seat_manager
-    detect_network_stack
-    detect_audio_stack
-    detect_ucode
-    detect_user_shell
-    detect_extras
-    detect_repositories
-    detect_username
-    detect_luks
-    detect_display_protocol
-    detect_nvidia
-    detect_virtualization
-    detect_hostname
-    detect_coreutils
-    detect_poweruser
-    detect_priv_escalation
-    detect_install_stage
-    detect_fstab_health
-    detect_boot_health
-    detect_pkg_health
-
+    detect_disk; detect_init; detect_filesystem; detect_zfs; detect_lvm
+    detect_bootloader; detect_uki; detect_kernel; detect_desktop
+    detect_display_manager; detect_xstack; detect_seat_manager
+    detect_network_stack; detect_audio_stack; detect_ucode
+    detect_user_shell; detect_extras; detect_repositories; detect_username
+    detect_luks; detect_display_protocol; detect_nvidia; detect_virtualization
+    detect_hostname; detect_coreutils; detect_poweruser; detect_priv_escalation
+    detect_install_stage; detect_fstab_health; detect_boot_health; detect_pkg_health
     state_save
 }
 
+# @brief Verify that /mnt is a valid recovery root
 validate_recovery_root() {
     mountpoint -q "${ROOT}" || die "recovery root is not mounted: ${ROOT}"
     [[ -d "${ROOT}/etc" ]] || die "missing ${ROOT}/etc"
 }
 
+# @brief Return a human-readable status summary
 recovery_get_status() {
     local status=""
     status+="Install stage: $(state_get RECOVERY_STATUS unknown)"$'\n'
@@ -578,10 +500,9 @@ recovery_get_status() {
     status+="Kernel: $(state_get KERNEL_CHOICE unknown)"$'\n'
     status+="Power User: $(state_get POWER_USER no)"$'\n'
     status+="Coreutils: $(state_get COREUTILS unknown)"$'\n'
-    local fstab_issues boot_issues pkg_issues
-    fstab_issues=$(state_get FSTAB_ISSUES none)
-    boot_issues=$(state_get BOOT_ISSUES none)
-    pkg_issues=$(state_get PKG_ISSUES none)
+    local fstab_issues=$(state_get FSTAB_ISSUES none)
+    local boot_issues=$(state_get BOOT_ISSUES none)
+    local pkg_issues=$(state_get PKG_ISSUES none)
     [[ "${fstab_issues}" != "none" ]] && status+=$'\n'"FSTAB issues: ${fstab_issues}"
     [[ "${boot_issues}" != "none" ]] && status+=$'\n'"Boot issues: ${boot_issues}"
     [[ "${pkg_issues}" != "none" ]] && status+=$'\n'"Package issues: ${pkg_issues}"

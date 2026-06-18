@@ -2,23 +2,16 @@
 set -Eeuo pipefail
 
 # Volk's Forge Framework – Limine bootloader installation
-
 configure_limine() {
     _require_tools limine-deploy lsblk blkid findmnt efibootmgr
     local fs_type="${FS_TYPE:-ext4}"
-    local bootloader="${BOOTLOADER:-limine}"
     local CHROOT_CMD="${CHROOT_CMD:-arch-chroot}"
 
-    # Detect ESP path
     local esp_mount=''
     for mp in /mnt/boot/efi /mnt/efi /mnt/boot; do
-        if findmnt -rn -o FSTYPE "${mp}" | grep -qx 'vfat'; then
-            esp_mount="${mp}"
-            break
-        fi
+        if findmnt -rn -o FSTYPE "${mp}" | grep -qx 'vfat'; then esp_mount="${mp}"; break; fi
     done
     [[ -n "${esp_mount}" ]] || die 'EFI partition not found'
-    log_info "EFI partition mount: ${esp_mount}"
 
     local esp_source esp_disk esp_part
     esp_source="$(findmnt -rn -o SOURCE "${esp_mount}")"
@@ -28,88 +21,64 @@ configure_limine() {
 
     log_info "Generating initramfs..."
     ${CHROOT_CMD} /mnt mkinitcpio -P || true
-    if ! compgen -G "/mnt/boot/initramfs-*.img" >/dev/null 2>&1; then
-        die 'No initramfs image was created'
-    fi
-    log_info "Initramfs generation complete"
+    if ! compgen -G "/mnt/boot/initramfs-*.img" >/dev/null 2>&1; then die 'No initramfs image was created'; fi
 
-    # UKI generation (if enabled) — must run after initramfs exists
     if [[ "$(state_get GENERATE_UKI no)" == "yes" ]]; then
-        source "${VFF_DIR}/lib/boot/uki.sh"
-        generate_uki "${esp_mount}"
+        source "${VFF_DIR}/lib/boot/uki.sh"; generate_uki "${esp_mount}"
     fi
 
-    # Install limine
     log_info "Installing Limine..."
     pkg_install limine || die "Failed to install limine"
-
     mkdir -p /mnt/boot/efi/EFI/BOOT
     if ! cp /mnt/usr/share/limine/BOOTX64.EFI /mnt/boot/efi/EFI/BOOT/ 2>/dev/null; then
         die "Failed to copy BOOTX64.EFI"
     fi
-    log_info "Limine EFI binary installed to /boot/efi/EFI/BOOT/"
 
-    # Detect kernel, initramfs, microcode
-    local limine_kernel limine_initramfs limine_microcode
-    limine_kernel=$(ls /mnt/boot/vmlinuz-* 2>/dev/null | head -n1)
-    [[ -n "${limine_kernel}" ]] || die 'No kernel image found'
-    limine_initramfs=$(ls /mnt/boot/initramfs-*.img 2>/dev/null | grep -v fallback | head -n1)
-    [[ -n "${limine_initramfs}" ]] || log_warn 'No initramfs image found'
-    limine_microcode=""
+    # Copy kernel and initramfs to ESP for Limine
+    cp /mnt/boot/vmlinuz-* "${esp_mount}/" 2>/dev/null || true
+    cp /mnt/boot/initramfs-*.img "${esp_mount}/" 2>/dev/null || true
+    if [[ -f /mnt/boot/amd-ucode.img ]]; then cp /mnt/boot/amd-ucode.img "${esp_mount}/"; fi
+    if [[ -f /mnt/boot/intel-ucode.img ]]; then cp /mnt/boot/intel-ucode.img "${esp_mount}/"; fi
+
+    local limine_kernel=$(ls /mnt/boot/vmlinuz-* 2>/dev/null | head -n1)
+    local limine_initramfs=$(ls /mnt/boot/initramfs-*.img 2>/dev/null | grep -v fallback | head -n1)
+    local limine_microcode=""
     [[ -f /mnt/boot/intel-ucode.img ]] && limine_microcode="intel-ucode.img"
     [[ -f /mnt/boot/amd-ucode.img ]] && limine_microcode="amd-ucode.img"
 
-    local limine_kernel_name limine_initramfs_name
-    limine_kernel_name="$(basename "${limine_kernel}")"
-    limine_initramfs_name="$(basename "${limine_initramfs}")"
-
-    # Get root UUID
-    local root_uuid
-    root_uuid="$(blkid -s UUID -o value "$(findmnt -rn -o SOURCE --target /mnt | sed 's/\[.*\]//')")"
-    [[ -n "${root_uuid}" ]] || die 'failed to detect root UUID'
-
-    # Build cmdline
+    local root_uuid=$(blkid -s UUID -o value "$(findmnt -rn -o SOURCE --target /mnt | sed 's/\[.*\]//')")
     local limine_root_cmdline="root=UUID=${root_uuid} rw"
     case "${fs_type}" in
         btrfs) limine_root_cmdline+=" rootfstype=btrfs" ;;
         xfs)   limine_root_cmdline+=" rootfstype=xfs" ;;
         f2fs)  limine_root_cmdline+=" rootfstype=f2fs" ;;
     esac
-
-    # LUKS/LVM additions
     if [[ "$(state_get USE_LUKS no)" == "yes" ]]; then
-        local crypt_uuid mapper_name="cryptroot"
-        crypt_uuid="$(state_get CRYPT_UUID '')"
-        [[ "$(state_get USE_LVM no)" == "yes" ]] && mapper_name="cryptlvm"
-        limine_root_cmdline+=" cryptdevice=UUID=${crypt_uuid}:${mapper_name}"
+        local crypt_uuid=$(state_get CRYPT_UUID '') mapper="cryptroot"
+        [[ "$(state_get USE_LVM no)" == "yes" ]] && mapper="cryptlvm"
+        limine_root_cmdline+=" cryptdevice=UUID=${crypt_uuid}:${mapper}"
     fi
-    if [[ "$(state_get USE_LVM no)" == "yes" ]]; then
-        limine_root_cmdline+=" root=/dev/vg0/root"
-    fi
+    if [[ "$(state_get USE_LVM no)" == "yes" ]]; then limine_root_cmdline+=" root=/dev/vg0/root"; fi
 
-    # Write limine.conf
     log_info "Writing ${esp_mount}/limine.conf..."
     cat > "${esp_mount}/limine.conf" <<LIMINE_EOF
 timeout: 5
 
 /Linux
     protocol: linux
-    kernel_path: boot():/${limine_kernel_name}
+    kernel_path: boot():/$(basename "${limine_kernel}")
 LIMINE_EOF
-
     if [[ -n "${limine_microcode}" && -f "/mnt/boot/${limine_microcode}" ]]; then
         cat >> "${esp_mount}/limine.conf" <<LIMINE_EOF
     module_path: boot():/${limine_microcode}
 LIMINE_EOF
     fi
-
     cat >> "${esp_mount}/limine.conf" <<LIMINE_EOF
-    module_path: boot():/${limine_initramfs_name}
+    module_path: boot():/$(basename "${limine_initramfs}")
     cmdline: ${limine_root_cmdline}
     comment: Boot ${DISTRO_NAME:-Linux}
 LIMINE_EOF
 
-    # Windows chainload if detected
     if [[ -f /mnt/boot/efi/EFI/Microsoft/Boot/bootmgfw.efi ]]; then
         cat >> "${esp_mount}/limine.conf" <<'LIMINE_EOF'
 
@@ -118,10 +87,8 @@ LIMINE_EOF
     path: boot():/EFI/Microsoft/Boot/bootmgfw.efi
     comment: Boot Windows
 LIMINE_EOF
-        log_info "Windows boot entry added to limine.conf"
     fi
 
-    # Create EFI boot entry
     log_info "Creating Limine EFI boot entry..."
     pkg_chroot efibootmgr --create --disk "${esp_disk}" --part "${esp_part}" \
         --label 'Limine' --loader '\EFI\BOOT\BOOTX64.EFI' --verbose \

@@ -11,6 +11,10 @@ create_filesystems() {
 
     local efi_part swap_part root_part
 
+    if [[ "$(state_get USE_LUKS no)" == "yes" ]]; then
+        cryptsetup close cryptroot 2>/dev/null || true   # ← added
+        log_info "Setting up LUKS on ${fs_target}..."
+
     # Manual mode: use user-specified partitions
     if [[ -n "$(state_get EFI_PART '')" ]]; then
         efi_part="$(state_get EFI_PART)"

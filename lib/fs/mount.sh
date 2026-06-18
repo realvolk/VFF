@@ -12,6 +12,10 @@ mount_filesystems() {
 
     local efi_part root_part efi_mount='/mnt/boot/efi'
 
+    if [[ "$(state_get USE_LVM no)" != "yes" && "$(state_get USE_LUKS no)" == "yes" ]]; then
+        cryptsetup close cryptroot 2>/dev/null || true   # ← added
+        log_info "Opening LUKS container..."
+
     if [[ -n "$(state_get EFI_PART '')" ]]; then
         efi_part="$(state_get EFI_PART)"
         root_part="$(state_get ROOT_PART)"

@@ -10,10 +10,12 @@ readonly VFF_STATE_FILE="${VFF_STATE_FILE:-${VFF_STATE_ROOT}/state.conf}"
 readonly VFF_STAGE_DIR="${VFF_STAGE_DIR:-${VFF_STATE_ROOT}/stages}"
 readonly VFF_LOG_DIR="${VFF_LOG_DIR:-${VFF_STATE_ROOT}/logs}"
 
+# @brief Ensure state directories exist
 ensure_state_dirs() {
     mkdir -p "${VFF_STATE_ROOT}" "${VFF_STAGE_DIR}" "${VFF_LOG_DIR}"
 }
 
+# @brief Save all known configuration keys to the state file
 state_save() {
     ensure_state_dirs
     {
@@ -52,16 +54,19 @@ state_save() {
     chmod 600 "${VFF_STATE_FILE}"
 }
 
+# @brief Load state from disk
 state_load() {
     [[ -f "${VFF_STATE_FILE}" ]] || return 0
     source "${VFF_STATE_FILE}"
 }
 
+# @brief Get a value from state, with optional default
 state_get() {
     local key="${1}" default="${2:-}"
     printf '%s\n' "${!key:-${default}}"
 }
 
+# @brief Set a key/value pair in the state file
 state_set() {
     ensure_state_dirs
     local key="${1}" value="${2}"
@@ -84,12 +89,22 @@ state_set() {
     mv "${tmpfile}" "${VFF_STATE_FILE}"
 }
 
+# @brief Mark a pipeline stage as completed
 stage_mark_done()   { ensure_state_dirs; touch "${VFF_STAGE_DIR}/${1}.done"; }
+
+# @brief Check if a stage is already done
 stage_is_done()     { [[ -f "${VFF_STAGE_DIR}/${1}.done" ]]; }
+
+# @brief Reset a single stage
 stage_reset()       { rm -f "${VFF_STAGE_DIR}/${1}.done"; }
+
+# @brief Reset all stage markers
 stage_reset_all()   { rm -f "${VFF_STAGE_DIR}"/*.done; }
+
+# @brief Return the path to a stage's log file
 stage_log_path()    { ensure_state_dirs; printf '%s/%s.log\n' "${VFF_LOG_DIR}" "${1}"; }
 
+# @brief Skip a stage if it is already completed
 stage_should_skip() {
     local stage="${1}"
     if ! stage_is_done "${stage}"; then

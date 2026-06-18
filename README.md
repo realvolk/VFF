@@ -57,5 +57,3 @@ configure_users
 ArtixForge is the reference implementation — a full Artix Linux installer
 with Power User mode, Quick Profiles, community recipes, and the gartix
 package manager. VFF is the distro-agnostic engine extracted from it.
-
-ArtixForge v9 will be rebuilt on top of VFF.
