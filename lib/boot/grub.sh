@@ -49,7 +49,10 @@ configure_grub() {
 
     # LUKS setup for GRUB
     if [[ "$(state_get USE_LUKS no)" == "yes" ]]; then
-        echo 'GRUB_ENABLE_CRYPTODISK=y' >> /mnt/etc/default/grub
+        # Only enable cryptodisk if /boot is inside the encrypted container
+        if ! findmnt /mnt/boot --noheadings &>/dev/null; then
+            echo 'GRUB_ENABLE_CRYPTODISK=y' >> /mnt/etc/default/grub
+        fi
         local crypt_uuid mapper_name="cryptroot"
         crypt_uuid="$(state_get CRYPT_UUID '')"
         [[ "$(state_get USE_LVM no)" == "yes" ]] && mapper_name="cryptlvm"

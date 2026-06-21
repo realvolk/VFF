@@ -15,8 +15,17 @@ configure_users() {
     [[ -x "/mnt${shell}" ]] || shell="/bin/bash"
 
     local root_hash user_hash
-    root_hash=$(openssl passwd -6 -- "${root_password}") || die 'hash root password'
-    user_hash=$(openssl passwd -6 -- "${password}")     || die 'hash user password'
+    # If already hashed (starts with $6$), use as-is; otherwise hash now
+    if [[ "${root_password}" == '$6$'* ]]; then
+        root_hash="${root_password}"
+    else
+        root_hash=$(openssl passwd -6 -- "${root_password}") || die 'hash root password'
+    fi
+    if [[ "${password}" == '$6$'* ]]; then
+        user_hash="${password}"
+    else
+        user_hash=$(openssl passwd -6 -- "${password}") || die 'hash user password'
+    fi
 
     log_info "Configuring users..."
     ${CHROOT_CMD} /mnt /bin/bash -c "

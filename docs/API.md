@@ -152,3 +152,21 @@ Set `VFF_BOOTLOADER_ID` before calling to change the boot menu label.
 | `tui_show_file <title> <file>` | Display a file |
 
 Colours are controlled by `VFF_COLOR_TITLE`, `VFF_COLOR_ACCENT`, `VFF_COLOR_ERROR`, and `VFF_COLOR_SUCCESS` (set before sourcing).
+
+## `tui/gum.sh` — Terminal interface (gum backend)
+
+| Function | Description |
+|----------|-------------|
+| `tui_title <text>` | Print a styled title bar using gum |
+| `tui_msg <title> <body>` | Show a message with gum formatting, wait for Enter |
+| `tui_msg_quick <title> <body>` | Show a message with gum formatting without pausing |
+| `tui_yesno <title> <body>` | Ask a yes/no question using gum confirm, return 0 for yes |
+| `tui_input <title> <body> <default>` | Prompt for text input using gum input |
+| `tui_password <title> <body>` | Prompt for a hidden password using gum input --password |
+| `tui_password_confirm <title> <prompt> <confirm>` | Prompt for password twice using gum, return if they match |
+| `tui_menu <title> <body> <items...>` | Show a menu using gum choose, return the chosen item |
+| `tui_checklist <title> <body> <items...>` | Show a multi-select menu using gum choose --no-limit |
+| `tui_spin <title> <command>` | Run a command with a gum spinner and log output |
+| `tui_show_file <title> <file>` | Display a file using gum pager |
+
+Colours are controlled by `VFF_COLOR_TITLE`, `VFF_COLOR_ACCENT`, `VFF_COLOR_ERROR`, and `VFF_COLOR_SUCCESS` (set before sourcing). Defaults match the ArtixForge purple/green palette. Requires `gum` installed on the system.

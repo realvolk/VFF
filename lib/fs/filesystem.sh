@@ -119,7 +119,7 @@ create_filesystems() {
         log_info "Setting up LUKS on ${fs_target}..."
         local luks_pass
         luks_pass="$(state_get LUKS_PASS)"
-        printf '%s' "${luks_pass}" | cryptsetup luksFormat --type luks2 "${fs_target}" -
+        printf '%s' "${luks_pass}" | cryptsetup luksFormat --type luks2 --pbkdf pbkdf2 "${fs_target}" -
         printf '%s' "${luks_pass}" | cryptsetup luksOpen "${fs_target}" cryptroot -
         fs_target="/dev/mapper/cryptroot"
     fi
