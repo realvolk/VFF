@@ -3,7 +3,7 @@ set -Eeuo pipefail
 VFF_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "${VFF_DIR}/lib/core.sh"
 vff_source_all
-source "${VFF_DIR}/profiles/artix.sh"   # or whichever profile is needed
+source "${VFF_DIR}/profiles/artix.sh"
 
 # 1. Mount
 if ! mountpoint -q /mnt; then
@@ -18,8 +18,9 @@ fi
 
 # 2. Detect
 source "${VFF_DIR}/lib/recovery/detect.sh"
-recovery_import_state   # calls detect_* and reconstruct_state_from_system
-local status=$(recovery_get_status)
+recovery_import_state
+local status
+status=$(recovery_get_status)
 
 # 3. Menu
 while true; do
@@ -28,12 +29,57 @@ while true; do
         "View system status" \
         "Repair detected issues" \
         "Repair filesystem" \
+        "Edit config files" \
         "Full reinstall" \
-        "Quit")
+        "Quit") || break
+
     case "${choice}" in
-        "Repair detected issues") repair_detected_issues ;;
-        "Repair filesystem")     repair_filesystem ;;
-        "Full reinstall")        run_pipeline ;;
+        "View system status")
+            status=$(recovery_get_status)
+            tui_msg "System Status" "${status}"
+            ;;
+        "Repair detected issues")
+            source "${VFF_DIR}/lib/recovery/repair.sh"
+            repair_detected_issues
+            tui_msg "Repair Complete" "Detected issues have been repaired."
+            status=$(recovery_get_status)
+            ;;
+        "Repair filesystem")
+            source "${VFF_DIR}/lib/recovery/repair.sh"
+            repair_filesystem
+            status=$(recovery_get_status)
+            ;;
+        "Edit config files")
+            local edit_choice
+            edit_choice=$(tui_menu "Edit Config" "Select file to edit:" \
+                "fstab" \
+                "mkinitcpio.conf" \
+                "pacman.conf" \
+                "GRUB config" \
+                "hostname" \
+                "locale.conf" \
+                "vconsole.conf" \
+                "Back") || continue
+            case "${edit_choice}" in
+                "fstab")           tui_edit "fstab" "/mnt/etc/fstab" ;;
+                "mkinitcpio.conf") tui_edit "mkinitcpio.conf" "/mnt/etc/mkinitcpio.conf" ;;
+                "pacman.conf")     tui_edit "pacman.conf" "/mnt/etc/pacman.conf" ;;
+                "GRUB config")     tui_edit "GRUB config" "/mnt/etc/default/grub" ;;
+                "hostname")        tui_edit "hostname" "/mnt/etc/hostname" ;;
+                "locale.conf")     tui_edit "locale.conf" "/mnt/etc/locale.conf" ;;
+                "vconsole.conf")   tui_edit "vconsole.conf" "/mnt/etc/vconsole.conf" ;;
+                *) continue ;;
+            esac
+            tui_msg "Config Edited" "${edit_choice} updated. Regenerate initramfs or GRUB config if needed."
+            ;;
+        "Full reinstall")
+            if tui_yesno "Full Reinstall" "This will wipe recovery state and start a fresh installation. Continue?"; then
+                umount -R /mnt 2>/dev/null || true
+                vff_collect_config
+                run_pipeline
+                exit 0
+            fi
+            ;;
         *) exit 0 ;;
     esac
 done
