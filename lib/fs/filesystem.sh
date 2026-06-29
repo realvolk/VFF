@@ -8,7 +8,7 @@ create_filesystems() {
     [[ -b "${disk}" ]] || die "invalid disk: ${disk}"
     fs_type="$(state_get FS_TYPE)"
     swap_enabled="$(state_get SWAP_ENABLED no)"
-    boot_mode="${VFF_BOOT_MODE:-${ARTIX_BOOT_MODE:-uefi}}"
+    boot_mode="${VFF_BOOT_MODE:-uefi}"
 
     local efi_part swap_part root_part
 
@@ -75,7 +75,7 @@ create_filesystems() {
 
     if [[ "${boot_mode}" != "bios" ]]; then
         log_info "Formatting EFI partition..."
-        mkfs.fat -F32 "${efi_part}" || die 'Failed to create FAT32 EFI filesystem'
+        mkfs.fat -F 32 -n ESP "${efi_part}" || die 'Failed to create FAT32 EFI filesystem'
         partprobe "${disk}" || true
         udevadm settle || true
         if ! blkid -o value -s TYPE "${efi_part}" | grep -qi 'vfat'; then
@@ -105,7 +105,11 @@ create_filesystems() {
         case "${fs_type}" in
             btrfs)     mkfs.btrfs -f "${root_lv}" ;;
             ext4)      mkfs.ext4 -F "${root_lv}" ;;
-            xfs)       mkfs.xfs -f -m bigtime=0 "${root_lv}" ;;
+            xfs)
+                local xfs_config=""
+                [[ -f /usr/share/xfsprogs/mkfs/lts_6.12.conf ]] && xfs_config="-c options=/usr/share/xfsprogs/mkfs/lts_6.12.conf"
+                mkfs.xfs -f -m bigtime=0 ${xfs_config} "${root_lv}"
+                ;;
             f2fs)      mkfs.f2fs -f -O extra_attr,compression "${root_lv}" ;;
             bcachefs)  mkfs.bcachefs --force --replicas=1 "${root_lv}" ;;
             exfat)     mkfs.exfat -L "root" "${root_lv}" ;;
@@ -141,7 +145,11 @@ create_filesystems() {
     case "${fs_type}" in
         btrfs)    mkfs.btrfs -f "${fs_target}" ;;
         ext4)     mkfs.ext4 -F "${fs_target}" ;;
-        xfs)      mkfs.xfs -f -m bigtime=0 "${fs_target}" ;;
+        xfs)
+            local xfs_config=""
+            [[ -f /usr/share/xfsprogs/mkfs/lts_6.12.conf ]] && xfs_config="-c options=/usr/share/xfsprogs/mkfs/lts_6.12.conf"
+            mkfs.xfs -f -m bigtime=0 ${xfs_config} "${fs_target}"
+            ;;
         f2fs)     mkfs.f2fs -f -O extra_attr,compression "${fs_target}" ;;
         bcachefs) mkfs.bcachefs --force --replicas=1 "${fs_target}" ;;
         exfat)    mkfs.exfat -L "root" "${fs_target}" ;;
@@ -151,7 +159,7 @@ create_filesystems() {
             zpool create -f -o ashift=12 -O compression=zstd -O atime=off -O mountpoint=none zroot "${fs_target}"
             zfs create -o mountpoint=/ zroot/root
             zfs mount zroot/root
-            mkdir -p /mnt/boot ;;
+            mkdir -p /mnt/gentoo/boot ;;
     esac
 
     log_info "Filesystem creation complete."

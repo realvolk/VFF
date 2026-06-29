@@ -2,16 +2,16 @@
 # Volk's Forge Framework – Gentoo Linux profile
 
 # --- Package backend ---
-CHROOT_CMD="chroot"
 source "${VFF_DIR}/lib/pkg/portage.sh"
 
 DISTRO_NAME="Gentoo Linux"
 DISTRO_ID="gentoo"
 VFF_BOOTLOADER_ID="Gentoo"
 
+VFF_TARGET="/mnt/gentoo"
 VFF_NETWORK_HOOK="gentoo_setup_network"
 VFF_FINALIZE_HOOK="gentoo_post_install"
-VFF_REQUIRED_TOOLS="sgdisk partprobe mount lsblk wipefs"
+VFF_REQUIRED_TOOLS="sgdisk parted partprobe mount lsblk wipefs mkfs.fat mkfs.ext4"
 
 UKI_SUPPORTED="yes"
 UKI_BINARY="ukify"
@@ -21,30 +21,36 @@ UKI_PACKAGE="sys-apps/systemd-utils"
 BASE_PACKAGES=(
     sys-kernel/gentoo-kernel
     sys-kernel/linux-firmware
+    sys-kernel/installkernel
     app-shells/bash
-    app-editors/vim
+    app-editors/nano
     app-admin/sudo
     dev-vcs/git
     net-misc/curl
     sys-apps/pciutils
     sys-apps/usbutils
     sys-apps/man-db
+    sys-process/cronie
+    app-admin/sysklogd
+    app-portage/gentoolkit
 )
 
 # --- Kernel choices ---
 KERNEL_CHOICES=(
-    "gentoo-kernel"        "Distribution kernel (binary)"
+    "gentoo-kernel"        "Distribution kernel (source, automated)"
+    "gentoo-kernel-bin"    "Distribution kernel (binary, precompiled)"
     "gentoo-sources"       "Source kernel (manual config)"
+    "gentoo-sources-genkernel" "Source kernel (genkernel automated)"
 )
 
 # --- Init systems ---
 INIT_SYSTEMS=("openrc" "systemd")
 
 # --- Filesystems ---
-FS_TYPES=("ext4" "btrfs" "xfs" "f2fs")
+FS_TYPES=("ext4" "xfs" "btrfs" "f2fs")
 
 # --- Bootloaders ---
-BOOTLOADERS=("grub" "refind" "efistub")
+BOOTLOADERS=("grub" "refind" "efistub" "systemd-boot")
 
 # --- Network stacks ---
 NETWORK_STACKS=("networkmanager" "dhcpcd+iwd")
@@ -115,6 +121,7 @@ EXTRA_PACKAGES=(
     ["git"]="dev-vcs/git"
     ["htop"]="sys-process/htop"
     ["tmux"]="app-misc/tmux"
+    ["links"]="www-client/links"
 )
 
 # --- Post-install ---
@@ -122,6 +129,8 @@ gentoo_post_install() {
     log_info "Running Gentoo post-install hooks..."
     pkg_chroot emerge --sync
     pkg_chroot eselect news read new
+    pkg_chroot getuto 2>/dev/null || true
+    log_info "Gentoo post-install complete."
 }
 
 # --- Network configuration ---

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# @brief Let the user pick a disk
 tui_select_disk() {
     local disk disks=()
     local lsblk_output
@@ -20,14 +19,18 @@ tui_select_disk() {
     state_set DISK "${disk}"
 }
 
-# @brief Partition setup — whole disk or manual
 tui_partition_setup() {
-    local disk
+    local disk boot_mode
     disk="$(state_get DISK)"
     [[ -b "${disk}" ]] || die "No disk selected"
+    boot_mode="${VFF_BOOT_MODE:-uefi}"
+
+    # BIOS mode notification
+    if [[ "${boot_mode}" == "bios" ]]; then
+        tui_msg_quick "BIOS Mode" "Legacy BIOS boot detected. UEFI-only features are disabled."
+    fi
 
     if tui_yesno "Partition Scheme" "Use the entire disk ${disk}?"; then
-        # Whole disk: ask about swap
         if tui_yesno "Swap" "Create a swap partition?"; then
             local mem_gib
             mem_gib=$(awk '/MemTotal/ {printf "%d", ($2 / 1024 / 1024) + 1}' /proc/meminfo)
@@ -43,7 +46,6 @@ tui_partition_setup() {
             state_set SWAP_ENABLED "no"
             state_set SWAP_SIZE "0"
         fi
-        # Clear manual partition selections; auto-partitioning will set them
         state_set EFI_PART ""
         state_set ROOT_PART ""
         state_set SWAP_PART ""
@@ -73,25 +75,28 @@ tui_partition_setup() {
         fi
     fi
 
-    # Select EFI partition
-    local efi_choice
-    efi_choice=$(printf '%s\n' "${parts[@]}" | tui_menu "EFI Partition" "Select EFI system partition (>=512 MiB):") || die "EFI partition required"
-    local efi_part="/dev/$(echo "${efi_choice}" | awk '{print $1}')"
-    state_set EFI_PART "${efi_part}"
+    if [[ "${boot_mode}" != "bios" ]]; then
+        local efi_choice
+        efi_choice=$(printf '%s\n' "${parts[@]}" | tui_menu "EFI Partition" "Select EFI system partition:" || true)
+        if [[ -n "${efi_choice}" ]]; then
+            state_set EFI_PART "/dev/$(echo "${efi_choice}" | awk '{print $1}')"
+        fi
+    fi
 
-    # Select root partition (exclude the one chosen as EFI)
     local -a root_candidates=()
     for part in "${parts[@]}"; do
-        [[ "/dev/$(echo "${part}" | awk '{print $1}')" != "${efi_part}" ]] && root_candidates+=("${part}")
+        local pn="/dev/$(echo "${part}" | awk '{print $1}')"
+        [[ "${pn}" != "$(state_get EFI_PART '')" ]] && root_candidates+=("${part}")
     done
+
     if [[ ${#root_candidates[@]} -eq 0 ]]; then
-        die "No partitions available for root (only EFI found). Create more partitions."
+        die "No partitions available for root"
     fi
+
     local root_choice
     root_choice=$(printf '%s\n' "${root_candidates[@]}" | tui_menu "Root Partition" "Select root partition:") || die "Root partition required"
     state_set ROOT_PART "/dev/$(echo "${root_choice}" | awk '{print $1}')"
 
-    # Swap (optional)
     if tui_yesno "Swap" "Do you have a swap partition?"; then
         local swap_choice
         swap_choice=$(printf '%s\n' "${parts[@]}" | tui_menu "Swap Partition" "Select swap partition:") || true
@@ -99,22 +104,12 @@ tui_partition_setup() {
             state_set SWAP_PART "/dev/$(echo "${swap_choice}" | awk '{print $1}')"
             state_set SWAP_ENABLED "yes"
             state_set SWAP_SIZE "0"
-        else
-            state_set SWAP_ENABLED "no"
-            state_set SWAP_SIZE "0"
         fi
-    else
-        state_set SWAP_ENABLED "no"
-        state_set SWAP_SIZE "0"
     fi
 }
 
-# @brief Select a single item from a profile-defined list
 tui_select_from_profile() {
-    local title="${1}"
-    local choices_var="${2}"
-    local state_key="${3}"
-    local default="${4}"
+    local title="${1}" choices_var="${2}" state_key="${3}" default="${4}"
 
     local -a raw=()
     eval "raw=(\"\${${choices_var}[@]}\")"
@@ -135,11 +130,8 @@ tui_select_from_profile() {
     state_set "${state_key}" "${chosen%% *}"
 }
 
-# @brief Select multiple items from a profile-defined checklist
 tui_checklist_from_profile() {
-    local title="${1}"
-    local choices_var="${2}"
-    local state_key="${3}"
+    local title="${1}" choices_var="${2}" state_key="${3}"
 
     local -a raw=()
     eval "raw=(\"\${${choices_var}[@]}\")"
@@ -160,25 +152,25 @@ tui_checklist_from_profile() {
     state_set "${state_key}" "${chosen//$'\n'/ }"
 }
 
-# @brief Collect all user configuration before installation
 vff_collect_config() {
     tui_select_disk
     tui_partition_setup
 
-    # LUKS and LVM before filesystem selection (they affect available options)
-    if tui_yesno "LUKS" "Encrypt the root partition?"; then
-        state_set USE_LUKS "yes"
-        local pass
-        pass=$(tui_password_confirm "LUKS Passphrase" "Enter passphrase:" "Confirm passphrase:")
-        state_set LUKS_PASS "${pass}"
+    if [[ "${VFF_BOOT_MODE:-uefi}" != "bios" ]]; then
+        if tui_yesno "LUKS" "Encrypt the root partition?"; then
+            state_set USE_LUKS "yes"
+            local pass
+            pass=$(tui_password_confirm "LUKS Passphrase" "Enter passphrase:" "Confirm passphrase:")
+            state_set LUKS_PASS "${pass}"
 
-        if tui_yesno "LUKS Keyfile" "Use a keyfile to avoid typing your password twice at boot?"; then
-            state_set LUKS_KEYFILE "yes"
+            if tui_yesno "LUKS Keyfile" "Use a keyfile to avoid typing your password twice at boot?"; then
+                state_set LUKS_KEYFILE "yes"
+            else
+                state_set LUKS_KEYFILE "no"
+            fi
         else
-            state_set LUKS_KEYFILE "no"
+            state_set USE_LUKS "no"
         fi
-    else
-        state_set USE_LUKS "no"
     fi
 
     if tui_yesno "LVM" "Use Logical Volume Management?"; then
@@ -187,22 +179,25 @@ vff_collect_config() {
         state_set USE_LVM "no"
     fi
 
-    tui_select_from_profile "Filesystem" "FS_TYPES"           "FS_TYPE"    "ext4"
-    tui_select_from_profile "Kernel"     "KERNEL_CHOICES"     "KERNEL_CHOICE" "linux"
-    tui_select_from_profile "Init"       "INIT_SYSTEMS"       "INIT"       "${INIT_SYSTEMS[0]:-openrc}"
-    tui_select_from_profile "Bootloader" "BOOTLOADERS"        "BOOTLOADER" "grub"
+    tui_select_from_profile "Filesystem" "FS_TYPES" "FS_TYPE" "ext4"
+    tui_select_from_profile "Kernel" "KERNEL_CHOICES" "KERNEL_CHOICE" "gentoo-kernel"
+    tui_select_from_profile "Init" "INIT_SYSTEMS" "INIT" "${INIT_SYSTEMS[0]:-openrc}"
 
-    if [[ "$(state_get ARTIX_BOOT_MODE uefi)" != "bios" ]]; then
+    # Bootloader selection respects boot mode
+    if [[ "${VFF_BOOT_MODE:-uefi}" == "bios" ]]; then
+        state_set BOOTLOADER "grub"
+        state_set GENERATE_UKI "no"
+        tui_msg_quick "BIOS Bootloader" "BIOS mode only supports GRUB."
+    else
+        tui_select_from_profile "Bootloader" "BOOTLOADERS" "BOOTLOADER" "grub"
         if tui_yesno "UKI" "Generate a Unified Kernel Image?"; then
             state_set GENERATE_UKI "yes"
         else
             state_set GENERATE_UKI "no"
         fi
-    else
-        state_set GENERATE_UKI "no"
     fi
 
-    tui_select_from_profile "Desktop"    "DESKTOP_CHOICES"    "WM_DE"      "none"
+    tui_select_from_profile "Desktop" "DESKTOP_CHOICES" "WM_DE" "none"
 
     if [[ "$(state_get WM_DE)" != "none" ]]; then
         tui_select_from_profile "Display Manager" "DISPLAY_MANAGER_CHOICES" "DISPLAY_MANAGER" "none"
@@ -210,16 +205,16 @@ vff_collect_config() {
         state_set DISPLAY_MANAGER "none"
     fi
 
-    tui_select_from_profile "Audio"      "AUDIO_CHOICES"      "AUDIO_STACK" "pipewire"
-    tui_select_from_profile "Network"    "NETWORK_STACKS"     "NETWORK_STACK" "networkmanager"
-    tui_select_from_profile "Shell"      "SHELL_CHOICES"      "USER_SHELL"   "bash"
-    tui_select_from_profile "Privilege"  "PRIV_ESCALATION_CHOICES" "PRIV_ESCALATION" "sudo"
-    tui_checklist_from_profile "Extras"  "EXTRA_PACKAGES"     "EXTRAS"
+    tui_select_from_profile "Audio" "AUDIO_CHOICES" "AUDIO_STACK" "pipewire"
+    tui_select_from_profile "Network" "NETWORK_STACKS" "NETWORK_STACK" "networkmanager"
+    tui_select_from_profile "Shell" "SHELL_CHOICES" "USER_SHELL" "bash"
+    tui_select_from_profile "Privilege" "PRIV_ESCALATION_CHOICES" "PRIV_ESCALATION" "sudo"
+    tui_checklist_from_profile "Extras" "EXTRA_PACKAGES" "EXTRAS"
 
     local input
 
-    input=$(tui_input "Hostname" "Enter system hostname:" "vff")
-    state_set HOSTNAME "${input:-vff}"
+    input=$(tui_input "Hostname" "Enter system hostname:" "gentoo")
+    state_set HOSTNAME "${input:-gentoo}"
 
     input=$(tui_input "Timezone" "Enter timezone (Region/City):" "UTC")
     state_set TIMEZONE "${input:-UTC}"
@@ -230,8 +225,8 @@ vff_collect_config() {
     input=$(tui_input "Keymap" "Enter keyboard layout:" "us")
     state_set KEYMAP "${input:-us}"
 
-    input=$(tui_input "Username" "Enter username:" "vff")
-    state_set USER_NAME "${input:-vff}"
+    input=$(tui_input "Username" "Enter username:" "gentoo")
+    state_set USER_NAME "${input:-gentoo}"
 
     local pass
 

@@ -6,13 +6,13 @@ set -Eeuo pipefail
 # Logging
 _ensure_log_dirs() {
     mkdir -p "$(dirname "${LOG_FILE:-/tmp/vff-installer.log}")"
-    [[ -d /mnt ]] && mkdir -p "$(dirname "${CHROOT_LOG:-/mnt/var/log/vff-installer.log}")" 2>/dev/null || true
+    [[ -d /mnt/gentoo ]] && mkdir -p "$(dirname "${CHROOT_LOG:-/mnt/gentoo/var/log/vff-installer.log}")" 2>/dev/null || true
 }
 
 log_info() {
     _ensure_log_dirs
     printf '\e[1;34m[*] %s\e[0m\n' "$*" | tee -a "${LOG_FILE:-/tmp/vff-installer.log}" >&2
-    [[ -d /mnt ]] && printf '[*] %s\n' "$*" >> "${CHROOT_LOG:-/mnt/var/log/vff-installer.log}" 2>/dev/null || true
+    [[ -d /mnt/gentoo ]] && printf '[*] %s\n' "$*" >> "${CHROOT_LOG:-/mnt/gentoo/var/log/vff-installer.log}" 2>/dev/null || true
 }
 
 log_warn() {
@@ -35,12 +35,17 @@ require_root() {
     [[ "${EUID}" -eq 0 ]] || die 'must be run as root'
 }
 
-# Linux‑only – uses /sys/firmware/efi. BSD ports must override this function.
-require_efi() {
-    [[ -d /sys/firmware/efi ]] || die 'system is not booted in UEFI mode'
+# Boot mode detection — replaces require_efi
+detect_boot_mode() {
+    if [[ -d /sys/firmware/efi ]]; then
+        VFF_BOOT_MODE="uefi"
+    else
+        VFF_BOOT_MODE="bios"
+    fi
+    export VFF_BOOT_MODE
+    log_info "Boot mode: ${VFF_BOOT_MODE}"
 }
 
-# Network detection (DNS to HTTP to ICMP fallback)
 require_internet() {
     if command -v dig &>/dev/null; then
         if dig +short +timeout=3 cloudflare.com &>/dev/null; then return 0; fi
@@ -57,7 +62,6 @@ require_internet() {
     die 'no internet connection'
 }
 
-# Disk helpers
 get_partition_name() {
     local disk="${1}" partition="${2}"
     if [[ "${disk}" =~ ^/dev/(nvme|mmcblk|loop) ]]; then
@@ -70,7 +74,7 @@ get_partition_name() {
 command_exists() { command -v "${1}" &>/dev/null; }
 
 check_disk_space() {
-    local required_gb="${1:-5}" target="${2:-/mnt}"
+    local required_gb="${1:-5}" target="${2:-/mnt/gentoo}"
     local avail_gb
     avail_gb=$(df -BG --output=avail "${target}" 2>/dev/null | tail -1 | tr -d ' G')
     if [[ -n "${avail_gb}" && "${avail_gb}" -lt "${required_gb}" ]]; then
@@ -81,7 +85,6 @@ check_disk_space() {
     fi
 }
 
-# @brief Verify required external tools are available, installing any that are missing
 _require_tools() {
     local missing=()
     for tool in "$@"; do
@@ -93,7 +96,6 @@ _require_tools() {
     fi
 }
 
-# Retry logic with exponential backoff
 retry_command() {
     local desc="${1}"; shift
     local retries=3 delay=5
@@ -108,7 +110,6 @@ retry_command() {
     return 1
 }
 
-# Download with resume support
 curl_resume() {
     local url="${1}" out="${2}"
     if [[ -f "${out}" ]]; then
@@ -125,7 +126,6 @@ curl_resume() {
     return 0
 }
 
-# @brief Source all VFF library modules except pkg backends
 vff_source_all() {
     local module
     for module in "${VFF_DIR}"/lib/*.sh "${VFF_DIR}"/lib/**/*.sh; do
@@ -138,22 +138,19 @@ vff_source_all() {
     source "${VFF_DIR}/tui/selections.sh"
 }
 
-# @brief Verify the live environment is ready, install base tools from profile
 vff_preflight() {
     require_root
-    require_efi
+    detect_boot_mode
     require_internet
-    check_disk_space 3 /mnt
+    check_disk_space 5 /mnt/gentoo
     _require_tools ${VFF_REQUIRED_TOOLS:-}
     log_info "Preflight checks passed."
 }
 
-# Run a command without the debug trace file descriptor leaking into child processes
 xtrace_safe() {
     ( unset BASH_XTRACEFD; "$@" )
 }
 
-# Walk up device mapper layers to find the raw LUKS partition UUID
 get_luks_raw_uuid() {
     local dev="$1"
     local current="$dev"
@@ -174,7 +171,6 @@ get_luks_raw_uuid() {
         fi
     done
 
-    # Fallback: scan all devices for LUKS partitions
     local luks_dev
     luks_dev=$(blkid -o device -t TYPE=crypto_LUKS 2>/dev/null | head -n1)
     if [[ -n "$luks_dev" ]]; then

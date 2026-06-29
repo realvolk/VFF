@@ -9,9 +9,9 @@ mount_filesystems() {
     swap_enabled="$(state_get SWAP_ENABLED no)"
     bootloader="$(state_get BOOTLOADER grub)"
     btrfs_layout="$(state_get BTRFS_LAYOUT standard)"
-    boot_mode="${VFF_BOOT_MODE:-${ARTIX_BOOT_MODE:-uefi}}"
+    boot_mode="${VFF_BOOT_MODE:-uefi}"
 
-    local efi_part root_part efi_mount='/mnt/boot/efi'
+    local efi_part root_part efi_mount='/mnt/gentoo/efi'
 
     if [[ -n "$(state_get EFI_PART '')" ]] || [[ -n "$(state_get ROOT_PART '')" ]]; then
         efi_part="$(state_get EFI_PART '')"
@@ -33,19 +33,14 @@ mount_filesystems() {
         fi
     fi
 
-    # EFI mount setup (UEFI only)
+    # EFI mount setup (UEFI only) — Gentoo uses /efi per DPS
     if [[ "${boot_mode}" != "bios" ]]; then
-        if [[ "${bootloader}" == 'efistub' ]]; then
-            mkdir -p /mnt/boot
-            efi_mount='/mnt/boot'
-        else
-            mkdir -p /mnt/boot/efi
-        fi
+        mkdir -p /mnt/gentoo/efi
+        efi_mount='/mnt/gentoo/efi'
     else
-        mkdir -p /mnt/boot
+        mkdir -p /mnt/gentoo/boot
     fi
 
-    # Load filesystem modules
     case "${fs_type}" in
         btrfs) modprobe btrfs 2>/dev/null || true ;;
         ext4)  modprobe ext4 2>/dev/null || true ;;
@@ -55,7 +50,6 @@ mount_filesystems() {
     esac
     command -v mount >/dev/null || die 'mount unavailable (util-linux missing)'
 
-    # VFAT only needed for UEFI
     if [[ "${boot_mode}" != "bios" ]]; then
         modprobe fat 2>/dev/null || true
         modprobe vfat 2>/dev/null || true
@@ -66,20 +60,20 @@ mount_filesystems() {
 
     # Already mounted check
     if [[ "${boot_mode}" != "bios" ]]; then
-        if mountpoint -q /mnt && mountpoint -q "${efi_mount}"; then
+        if mountpoint -q /mnt/gentoo && mountpoint -q "${efi_mount}"; then
             log_info "Filesystems already mounted, skipping remount."
             return 0
         fi
-        umount -R /mnt/boot/efi 2>/dev/null || true
+        umount -R /mnt/gentoo/efi 2>/dev/null || true
     else
-        if mountpoint -q /mnt; then
+        if mountpoint -q /mnt/gentoo; then
             log_info "Root already mounted, skipping remount."
             return 0
         fi
     fi
-    umount -R /mnt/boot 2>/dev/null || true
-    umount -R /mnt 2>/dev/null || true
-    mkdir -p /mnt
+    umount -R /mnt/gentoo/boot 2>/dev/null || true
+    umount -R /mnt/gentoo 2>/dev/null || true
+    mkdir -p /mnt/gentoo
 
     # LVM activation
     if [[ "$(state_get USE_LVM no)" == "yes" ]]; then
@@ -102,68 +96,68 @@ mount_filesystems() {
     log_info "Mounting root filesystem..."
     case "${fs_type}" in
         btrfs)
-            mount "${root_part}" /mnt
-            mountpoint -q /mnt || die 'failed to mount root filesystem'
+            mount "${root_part}" /mnt/gentoo
+            mountpoint -q /mnt/gentoo || die 'failed to mount root filesystem'
 
             log_info "Creating BTRFS subvolumes..."
             case "${btrfs_layout}" in
                 flat)
                     for subvol in @; do
-                        if ! btrfs subvolume list /mnt | awk '{print $NF}' | grep -qx "${subvol}"; then
-                            btrfs subvolume create "/mnt/${subvol}"
+                        if ! btrfs subvolume list /mnt/gentoo | awk '{print $NF}' | grep -qx "${subvol}"; then
+                            btrfs subvolume create "/mnt/gentoo/${subvol}"
                         fi
                     done
                     ;;
                 snapshot)
                     for subvol in @ @home @log @pkg @snapshots; do
-                        if ! btrfs subvolume list /mnt | awk '{print $NF}' | grep -qx "${subvol}"; then
-                            btrfs subvolume create "/mnt/${subvol}"
+                        if ! btrfs subvolume list /mnt/gentoo | awk '{print $NF}' | grep -qx "${subvol}"; then
+                            btrfs subvolume create "/mnt/gentoo/${subvol}"
                         fi
                     done
                     ;;
                 standard|*)
                     for subvol in @ @home; do
-                        if ! btrfs subvolume list /mnt | awk '{print $NF}' | grep -qx "${subvol}"; then
-                            btrfs subvolume create "/mnt/${subvol}"
+                        if ! btrfs subvolume list /mnt/gentoo | awk '{print $NF}' | grep -qx "${subvol}"; then
+                            btrfs subvolume create "/mnt/gentoo/${subvol}"
                         fi
                     done
                     ;;
             esac
 
-            umount /mnt
-            mount -o noatime,compress=zstd,subvol=@ "${root_part}" /mnt
-            mountpoint -q /mnt || die 'failed to mount root filesystem'
+            umount /mnt/gentoo
+            mount -o noatime,compress=zstd,subvol=@ "${root_part}" /mnt/gentoo
+            mountpoint -q /mnt/gentoo || die 'failed to mount root filesystem'
 
             case "${btrfs_layout}" in
                 flat) ;;
                 snapshot)
-                    mount --mkdir -o noatime,compress=zstd,subvol=@home "${root_part}" /mnt/home
-                    mount --mkdir -o noatime,compress=zstd,subvol=@log "${root_part}" /mnt/var/log
-                    mount --mkdir -o noatime,compress=zstd,subvol=@pkg "${root_part}" /mnt/var/cache/pacman/pkg
-                    mount --mkdir -o noatime,compress=zstd,subvol=@snapshots "${root_part}" /mnt/.snapshots
+                    mount --mkdir -o noatime,compress=zstd,subvol=@home "${root_part}" /mnt/gentoo/home
+                    mount --mkdir -o noatime,compress=zstd,subvol=@log "${root_part}" /mnt/gentoo/var/log
+                    mount --mkdir -o noatime,compress=zstd,subvol=@pkg "${root_part}" /mnt/gentoo/var/cache/pacman/pkg
+                    mount --mkdir -o noatime,compress=zstd,subvol=@snapshots "${root_part}" /mnt/gentoo/.snapshots
                     ;;
                 standard|*)
-                    mount --mkdir -o noatime,compress=zstd,subvol=@home "${root_part}" /mnt/home
+                    mount --mkdir -o noatime,compress=zstd,subvol=@home "${root_part}" /mnt/gentoo/home
                     ;;
             esac
             ;;
         zfs)
             zpool export zroot 2>/dev/null || true
-            zpool import -R /mnt zroot
+            zpool import -R /mnt/gentoo zroot
             zfs mount zroot/root
-            mountpoint -q /mnt || die 'failed to mount ZFS root dataset'
+            mountpoint -q /mnt/gentoo || die 'failed to mount ZFS root dataset'
             ;;
         ext4|xfs|f2fs|bcachefs)
-            local mount_opts="defaults"
+            local mount_opts="defaults,noatime"
             if [[ "$(lsblk -dno ROTA "${root_part}" 2>/dev/null)" == "0" ]]; then
-                mount_opts="${mount_opts},discard"
+                mount_opts="${mount_opts}"
             fi
-            mount -t "${fs_type}" -o "${mount_opts}" "${root_part}" /mnt
-            mountpoint -q /mnt || die 'failed to mount root filesystem'
+            mount -t "${fs_type}" -o "${mount_opts}" "${root_part}" /mnt/gentoo
+            mountpoint -q /mnt/gentoo || die 'failed to mount root filesystem'
             ;;
         exfat)
-            mount -t exfat "${root_part}" /mnt
-            mountpoint -q /mnt || die 'failed to mount root filesystem'
+            mount -t exfat "${root_part}" /mnt/gentoo
+            mountpoint -q /mnt/gentoo || die 'failed to mount root filesystem'
             ;;
         *)
             die "unsupported filesystem: ${fs_type}"
@@ -179,7 +173,7 @@ mount_filesystems() {
             *) die "EFI partition is not FAT32 (detected: ${efi_fs:-unknown})" ;;
         esac
 
-        log_info "Mounting EFI partition..."
+        log_info "Mounting EFI partition at /mnt/gentoo/efi..."
         mount -t vfat --mkdir "${efi_part}" "${efi_mount}"
         mountpoint -q "${efi_mount}" || die 'failed to mount EFI partition'
     fi

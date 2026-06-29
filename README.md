@@ -1,4 +1,4 @@
-# Volk's Forge Framework
+# Volk's Forge Framework - Gentoo branch
 
 A distro-agnostic installer construction kit. VFF provides a modular,
 well-tested backend, a pluggable terminal interface, and an optional

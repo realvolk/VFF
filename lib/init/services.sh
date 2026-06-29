@@ -6,10 +6,10 @@ set -Eeuo pipefail
 service_exists() {
     local svc="${1}" init="${INIT:-openrc}"
     case "${init}" in
-        openrc)   [[ -f "/etc/init.d/${svc}" ]] ;;
-        runit)    [[ -d "/etc/runit/sv/${svc}" ]] ;;
-        dinit)    [[ -f "/etc/dinit.d/${svc}" ]] ;;
-        s6)       [[ -d "/etc/s6/sv/${svc}" ]] ;;
+        openrc)   [[ -f "/etc/init.d/${svc}" ]] || [[ -f "/mnt/gentoo/etc/init.d/${svc}" ]] ;;
+        runit)    [[ -d "/etc/runit/sv/${svc}" ]] || [[ -d "/mnt/gentoo/etc/runit/sv/${svc}" ]] ;;
+        dinit)    [[ -f "/etc/dinit.d/${svc}" ]] || [[ -f "/mnt/gentoo/etc/dinit.d/${svc}" ]] ;;
+        s6)       [[ -d "/etc/s6/sv/${svc}" ]] || [[ -d "/mnt/gentoo/etc/s6/sv/${svc}" ]] ;;
         systemd)  systemctl list-unit-files "${svc}.service" &>/dev/null ;;
         *)        return 1 ;;
     esac
@@ -22,13 +22,33 @@ enable_service() {
         return 1
     fi
     case "${init}" in
-        openrc)   rc-update add "${svc}" default ;;
-        runit)    mkdir -p /etc/runit/runsvdir/default
-                  ln -sf "/etc/runit/sv/${svc}" "/etc/runit/runsvdir/default/${svc}" ;;
-        dinit)    mkdir -p /etc/dinit.d/boot.d
-                  ln -sf "../${svc}" "/etc/dinit.d/boot.d/${svc}" ;;
+        openrc)
+            if [[ -d /mnt/gentoo ]]; then
+                chroot /mnt/gentoo /sbin/rc-update add "${svc}" default
+            else
+                rc-update add "${svc}" default
+            fi
+            ;;
+        runit)
+            local target="/mnt/gentoo"
+            [[ -d /mnt/gentoo ]] || target=""
+            mkdir -p "${target}/etc/runit/runsvdir/default"
+            ln -sf "/etc/runit/sv/${svc}" "${target}/etc/runit/runsvdir/default/${svc}"
+            ;;
+        dinit)
+            local target="/mnt/gentoo"
+            [[ -d /mnt/gentoo ]] || target=""
+            mkdir -p "${target}/etc/dinit.d/boot.d"
+            ln -sf "../${svc}" "${target}/etc/dinit.d/boot.d/${svc}"
+            ;;
         s6)       s6-rc-bundle-update add default "${svc}" 2>/dev/null || true ;;
-        systemd)  systemctl enable "${svc}" ;;
+        systemd)
+            if [[ -d /mnt/gentoo ]]; then
+                chroot /mnt/gentoo /usr/bin/systemctl enable "${svc}"
+            else
+                systemctl enable "${svc}"
+            fi
+            ;;
     esac
 }
 
@@ -39,27 +59,59 @@ enable_service_boot() {
         return 1
     fi
     case "${init}" in
-        openrc)   rc-update add "${svc}" boot ;;
-        runit)    mkdir -p /etc/runit/runsvdir/boot
-                  ln -sf "/etc/runit/sv/${svc}" "/etc/runit/runsvdir/boot/${svc}" ;;
-        dinit)    mkdir -p /etc/dinit.d/boot.d
-                  ln -sf "../${svc}" "/etc/dinit.d/boot.d/${svc}" ;;
+        openrc)
+            if [[ -d /mnt/gentoo ]]; then
+                chroot /mnt/gentoo /sbin/rc-update add "${svc}" boot
+            else
+                rc-update add "${svc}" boot
+            fi
+            ;;
+        runit)
+            local target="/mnt/gentoo"
+            [[ -d /mnt/gentoo ]] || target=""
+            mkdir -p "${target}/etc/runit/runsvdir/boot"
+            ln -sf "/etc/runit/sv/${svc}" "${target}/etc/runit/runsvdir/boot/${svc}"
+            ;;
+        dinit)
+            local target="/mnt/gentoo"
+            [[ -d /mnt/gentoo ]] || target=""
+            mkdir -p "${target}/etc/dinit.d/boot.d"
+            ln -sf "../${svc}" "${target}/etc/dinit.d/boot.d/${svc}"
+            ;;
         s6)       s6-rc-bundle-update add boot "${svc}" 2>/dev/null || true ;;
-        systemd)  systemctl enable "${svc}" ;;
+        systemd)
+            if [[ -d /mnt/gentoo ]]; then
+                chroot /mnt/gentoo /usr/bin/systemctl enable "${svc}"
+            else
+                systemctl enable "${svc}"
+            fi
+            ;;
     esac
 }
 
 disable_service() {
     local svc="${1}" init="${INIT:-openrc}"
     case "${init}" in
-        openrc)   rc-update del "${svc}" default 2>/dev/null || true
-                  rc-update del "${svc}" boot 2>/dev/null || true ;;
-        runit)    rm -f "/etc/runit/runsvdir/default/${svc}"
-                  rm -f "/etc/runit/runsvdir/boot/${svc}" ;;
-        dinit)    rm -f "/etc/dinit.d/boot.d/${svc}" ;;
+        openrc)
+            if [[ -d /mnt/gentoo ]]; then
+                chroot /mnt/gentoo /sbin/rc-update del "${svc}" default 2>/dev/null || true
+                chroot /mnt/gentoo /sbin/rc-update del "${svc}" boot 2>/dev/null || true
+            else
+                rc-update del "${svc}" default 2>/dev/null || true
+                rc-update del "${svc}" boot 2>/dev/null || true
+            fi
+            ;;
+        runit)    rm -f "/mnt/gentoo/etc/runit/runsvdir/default/${svc}" "/mnt/gentoo/etc/runit/runsvdir/boot/${svc}" 2>/dev/null || true ;;
+        dinit)    rm -f "/mnt/gentoo/etc/dinit.d/boot.d/${svc}" 2>/dev/null || true ;;
         s6)       s6-rc-bundle-update del default "${svc}" 2>/dev/null || true
                   s6-rc-bundle-update del boot "${svc}" 2>/dev/null || true ;;
-        systemd)  systemctl disable "${svc}" ;;
+        systemd)
+            if [[ -d /mnt/gentoo ]]; then
+                chroot /mnt/gentoo /usr/bin/systemctl disable "${svc}"
+            else
+                systemctl disable "${svc}"
+            fi
+            ;;
     esac
 }
 

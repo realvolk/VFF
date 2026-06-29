@@ -9,8 +9,8 @@ configure_system() {
     timezone="${TIMEZONE:-UTC}"
     locale="${LOCALE:-en_US.UTF-8}"
     keymap="${KEYMAP:-us}"
-    local target="${VFF_TARGET:-/mnt}"
-    local chroot_cmd="${CHROOT_CMD:-arch-chroot}"
+    local target="${VFF_TARGET:-/mnt/gentoo}"
+    local init="${INIT:-openrc}"
 
     [[ -n "${hostname}" ]] && [[ "${hostname}" =~ ^[a-zA-Z0-9][a-zA-Z0-9\-]*$ ]] || die 'invalid hostname'
     [[ -n "${timezone}" ]] || die 'invalid timezone'
@@ -31,9 +31,19 @@ EOF
     elif ! grep -q "^${locale}" "${target}/etc/locale.gen"; then
         printf '%s UTF-8\n' "${locale%% *}" >> "${target}/etc/locale.gen"
     fi
-    ${chroot_cmd} "${target}" locale-gen || die 'failed to generate locale'
-    cat <<EOF > "${target}/etc/locale.conf"
-LANG=${locale}
+
+    # Use chroot for locale-gen
+    if [[ -x "${target}/bin/bash" ]]; then
+        chroot "${target}" /usr/sbin/locale-gen || die 'failed to generate locale'
+    else
+        locale-gen || die 'failed to generate locale'
+    fi
+
+    # Write locale configuration using Gentoo's env.d system
+    mkdir -p "${target}/etc/env.d"
+    cat <<EOF > "${target}/etc/env.d/02locale"
+LANG="${locale}"
+LC_COLLATE="C.UTF-8"
 EOF
 
     log_info "Configuring keyboard layout..."
@@ -41,10 +51,20 @@ EOF
 KEYMAP=${keymap}
 EOF
 
+    # OpenRC: also write keymap to /etc/conf.d/keymaps
+    if [[ "${init}" == "openrc" ]]; then
+        mkdir -p "${target}/etc/conf.d"
+        echo "keymap=\"${keymap}\"" > "${target}/etc/conf.d/keymaps"
+    fi
+
     log_info "Configuring timezone..."
     [[ -e "${target}/usr/share/zoneinfo/${timezone}" ]] || die 'invalid timezone path'
     ln -sf "/usr/share/zoneinfo/${timezone}" "${target}/etc/localtime"
-    ${chroot_cmd} "${target}" hwclock --systohc || die 'failed to synchronize hardware clock'
+    if [[ -x "${target}/bin/bash" ]]; then
+        chroot "${target}" /sbin/hwclock --systohc || die 'failed to synchronize hardware clock'
+    else
+        hwclock --systohc || die 'failed to synchronize hardware clock'
+    fi
 
     log_info "System configuration complete."
 }
