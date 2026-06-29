@@ -49,7 +49,6 @@ configure_grub() {
 
     # LUKS setup for GRUB
     if [[ "$(state_get USE_LUKS no)" == "yes" ]]; then
-        # Only enable cryptodisk if /boot is inside the encrypted container
         if ! findmnt /mnt/boot --noheadings &>/dev/null; then
             echo 'GRUB_ENABLE_CRYPTODISK=y' >> /mnt/etc/default/grub
         fi
@@ -74,9 +73,22 @@ configure_grub() {
         fi
     fi
 
+    # Build grub-install arguments
+    local -a grub_args=()
+    grub_args+=( --target=x86_64-efi )
+    grub_args+=( --efi-directory="${esp_mount#/mnt}" )
+    grub_args+=( --bootloader-id="${VFF_BOOTLOADER_ID:-VFF}" )
+    grub_args+=( --removable )
+
+    # LVM requires embedded modules so grub-probe can resolve /dev/mapper/ paths
+    if [[ "$(state_get USE_LVM no)" == "yes" ]]; then
+        echo 'GRUB_PRELOAD_MODULES="lvm dm-mod"' >> /mnt/etc/default/grub
+        grub_args+=( --modules )
+        grub_args+=( "part_gpt part_msdos fat lvm dm-mod ext2" )
+    fi
+
     log_info "Installing GRUB..."
-    ${CHROOT_CMD} /mnt grub-install --target=x86_64-efi --efi-directory="${esp_mount#/mnt}" --bootloader-id="${VFF_BOOTLOADER_ID:-VFF}" \
-        || die 'grub-install failed'
+    ${CHROOT_CMD} /mnt grub-install "${grub_args[@]}" || die 'grub-install failed'
 
     if [[ -n "${root_param}" ]]; then
         ${CHROOT_CMD} /mnt sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"${root_param}\"|" /etc/default/grub

@@ -14,6 +14,12 @@ load_profile() {
     export VFF_PROFILE="${profile_name}"
 }
 
+# @brief Check if a feature flag is enabled
+use_enable() {
+    local flag="${1}"
+    [[ " ${selected_features[*]:-} " =~ " ${flag} " ]] && return 0 || return 1
+}
+
 # @brief Apply package-specific overrides to flags
 apply_pkg_flags() {
     VFF_CFLAGS="${PKG_CFLAGS:-${VFF_CFLAGS}}"

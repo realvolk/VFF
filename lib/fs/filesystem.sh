@@ -11,10 +11,6 @@ create_filesystems() {
 
     local efi_part swap_part root_part
 
-    if [[ "$(state_get USE_LUKS no)" == "yes" ]]; then
-        cryptsetup close cryptroot 2>/dev/null || true   # ← added
-        log_info "Setting up LUKS on ${fs_target}..."
-
     # Manual mode: use user-specified partitions
     if [[ -n "$(state_get EFI_PART '')" ]]; then
         efi_part="$(state_get EFI_PART)"
@@ -116,6 +112,7 @@ create_filesystems() {
 
     # Plain LUKS (no LVM)
     if [[ "$(state_get USE_LUKS no)" == "yes" ]]; then
+        cryptsetup close cryptroot 2>/dev/null || true
         log_info "Setting up LUKS on ${fs_target}..."
         local luks_pass
         luks_pass="$(state_get LUKS_PASS)"

@@ -136,11 +136,10 @@ PRESET
         fi
         if ! pkg_install_local "${artifact}"; then
             log_error "Failed to install ${pkgname}"
-            rm -f "${artifact}"
             handle_build_failure "${recipe_name}" "${log_file}" "${pkg_work}"
             return 1
         fi
-        rm -f "${artifact}"
+        log_info "  Artifact cached: ${artifact}"
     fi
 
     flags_h="$(flags_hash)"

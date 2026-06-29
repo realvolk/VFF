@@ -12,7 +12,7 @@ load_recipe() {
     [[ -f "${recipe_file}" ]] || die "Recipe not found: ${recipe_name}"
 
     pkgname='' pkgver='' pkgrel='' desc='' url=''
-    sources=() depends=() makedepends=() feature_flags=()
+    sources=() depends=() makedepends=() feature_flags=() provides=()
     unset -f prepare configure build check package 2>/dev/null || true
 
     source "${recipe_file}"
@@ -21,7 +21,13 @@ load_recipe() {
     [[ -n "${pkgver}" ]]  || die "Recipe ${recipe_name} missing pkgver"
     [[ -n "${pkgrel}" ]]  || die "Recipe ${recipe_name} missing pkgrel"
 
-    export pkgname pkgver pkgrel desc url sources depends makedepends feature_flags
+    # Guard against recipes that leave arrays unset
+    depends=("${depends[@]:-}")
+    makedepends=("${makedepends[@]:-}")
+    feature_flags=("${feature_flags[@]:-}")
+    provides=("${provides[@]:-}")
+
+    export pkgname pkgver pkgrel desc url sources depends makedepends feature_flags provides
 }
 
 # @brief List all available recipes

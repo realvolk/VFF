@@ -5,10 +5,21 @@ set -Eeuo pipefail
 
 setup_networking() {
     local stack="${NETWORK_STACK:-dhcpcd+iwd}" init="${INIT:-openrc}" pkgs=()
+    local init_suffix=""
+
+    # Some distros (Artix) suffix init-specific service packages; others (Arch, Gentoo) don't
+    case "${VFF_DISTRO:-artix}" in
+        artix) init_suffix="-${init}" ;;
+        *)     init_suffix="" ;;
+    esac
+
     case "${stack}" in
-        networkmanager) pkgs=(networkmanager "networkmanager-${init}") ;;
-        connman)        pkgs=(connman "connman-${init}") ;;
-        dhcpcd+iwd)     pkgs=(dhcpcd iwd "dhcpcd-${init}" "iwd-${init}") ;;
+        networkmanager) pkgs=(networkmanager)
+                        [[ -n "${init_suffix}" ]] && pkgs+=("networkmanager${init_suffix}") ;;
+        connman)        pkgs=(connman)
+                        [[ -n "${init_suffix}" ]] && pkgs+=("connman${init_suffix}") ;;
+        dhcpcd+iwd)     pkgs=(dhcpcd iwd)
+                        [[ -n "${init_suffix}" ]] && pkgs+=("dhcpcd${init_suffix}" "iwd${init_suffix}") ;;
         none) return 0 ;;
     esac
 

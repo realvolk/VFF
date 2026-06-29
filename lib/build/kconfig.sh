@@ -5,10 +5,13 @@ set -Eeuo pipefail
 
 # @brief Enable essential kernel options
 ensure_boot_essentials() {
+    scripts/config --enable BLOCK
+    scripts/config --enable BLK_DEV
     scripts/config --enable VIRTIO
     scripts/config --enable VIRTIO_MENU
     scripts/config --enable VIRTIO_PCI
     scripts/config --enable VIRTIO_BLK
+    scripts/config --enable USB_HID
     scripts/config --enable BLK_DEV_SD
     scripts/config --enable BLK_DEV_NVME
     scripts/config --enable ATA
@@ -181,8 +184,7 @@ apply_advanced_config() {
     local dbg
     dbg="$(state_get KERNEL_ADV_DEBUG "")"
     for d in ${dbg}; do
-        case "${d}" in
-            ftrace)   scripts/config --enable FTRACE ;;
+        case "${d}" in            ftrace)   scripts/config --enable FTRACE ;;
             perf)     scripts/config --enable PERF_EVENTS ;;
             kprobes)  scripts/config --enable KPROBES ;;
             ebpf)     scripts/config --enable BPF_SYSCALL ;;
