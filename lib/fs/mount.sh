@@ -3,34 +3,49 @@ set -Eeuo pipefail
 
 mount_filesystems() {
     _require_tools mount findmnt blkid
-    local disk fs_type swap_enabled bootloader btrfs_layout
+    local disk fs_type swap_enabled bootloader btrfs_layout boot_mode
     disk="$(state_get DISK)"
     fs_type="$(state_get FS_TYPE)"
     swap_enabled="$(state_get SWAP_ENABLED no)"
     bootloader="$(state_get BOOTLOADER grub)"
     btrfs_layout="$(state_get BTRFS_LAYOUT standard)"
+    boot_mode="${VFF_BOOT_MODE:-${ARTIX_BOOT_MODE:-uefi}}"
 
     local efi_part root_part efi_mount='/mnt/boot/efi'
 
-    if [[ -n "$(state_get EFI_PART '')" ]]; then
-        efi_part="$(state_get EFI_PART)"
+    if [[ -n "$(state_get EFI_PART '')" ]] || [[ -n "$(state_get ROOT_PART '')" ]]; then
+        efi_part="$(state_get EFI_PART '')"
         root_part="$(state_get ROOT_PART)"
     else
-        efi_part=$(get_partition_name "${disk}" 1)
-        if [[ "${swap_enabled}" == 'yes' ]]; then
-            root_part=$(get_partition_name "${disk}" 3)
+        if [[ "${boot_mode}" == "bios" ]]; then
+            if [[ "${swap_enabled}" == 'yes' ]]; then
+                root_part=$(get_partition_name "${disk}" 2)
+            else
+                root_part=$(get_partition_name "${disk}" 1)
+            fi
         else
-            root_part=$(get_partition_name "${disk}" 2)
+            efi_part=$(get_partition_name "${disk}" 1)
+            if [[ "${swap_enabled}" == 'yes' ]]; then
+                root_part=$(get_partition_name "${disk}" 3)
+            else
+                root_part=$(get_partition_name "${disk}" 2)
+            fi
         fi
     fi
 
-    if [[ "${bootloader}" == 'efistub' ]]; then
-        mkdir -p /mnt/boot
-        efi_mount='/mnt/boot'
+    # EFI mount setup (UEFI only)
+    if [[ "${boot_mode}" != "bios" ]]; then
+        if [[ "${bootloader}" == 'efistub' ]]; then
+            mkdir -p /mnt/boot
+            efi_mount='/mnt/boot'
+        else
+            mkdir -p /mnt/boot/efi
+        fi
     else
-        mkdir -p /mnt/boot/efi
+        mkdir -p /mnt/boot
     fi
 
+    # Load filesystem modules
     case "${fs_type}" in
         btrfs) modprobe btrfs 2>/dev/null || true ;;
         ext4)  modprobe ext4 2>/dev/null || true ;;
@@ -40,20 +55,33 @@ mount_filesystems() {
     esac
     command -v mount >/dev/null || die 'mount unavailable (util-linux missing)'
 
-    modprobe fat 2>/dev/null || true
-    modprobe vfat 2>/dev/null || true
-    if ! grep -q 'vfat' /proc/filesystems 2>/dev/null; then
-        die 'FAT/VFAT kernel support unavailable — check kernel config'
+    # VFAT only needed for UEFI
+    if [[ "${boot_mode}" != "bios" ]]; then
+        modprobe fat 2>/dev/null || true
+        modprobe vfat 2>/dev/null || true
+        if ! grep -q 'vfat' /proc/filesystems 2>/dev/null; then
+            die 'FAT/VFAT kernel support unavailable — check kernel config'
+        fi
     fi
 
-    if mountpoint -q /mnt && mountpoint -q /mnt/boot/efi; then
-        log_info "Filesystems already mounted, skipping remount."
-        return 0
+    # Already mounted check
+    if [[ "${boot_mode}" != "bios" ]]; then
+        if mountpoint -q /mnt && mountpoint -q "${efi_mount}"; then
+            log_info "Filesystems already mounted, skipping remount."
+            return 0
+        fi
+        umount -R /mnt/boot/efi 2>/dev/null || true
+    else
+        if mountpoint -q /mnt; then
+            log_info "Root already mounted, skipping remount."
+            return 0
+        fi
     fi
-    umount -R /mnt/boot/efi 2>/dev/null || true
+    umount -R /mnt/boot 2>/dev/null || true
     umount -R /mnt 2>/dev/null || true
     mkdir -p /mnt
 
+    # LVM activation
     if [[ "$(state_get USE_LVM no)" == "yes" ]]; then
         log_info "Activating LVM volumes..."
         modprobe dm-mod 2>/dev/null || true
@@ -142,20 +170,19 @@ mount_filesystems() {
             ;;
     esac
 
-    local efi_fs
-    efi_fs="$(blkid -o value -s TYPE "${efi_part}" 2>/dev/null || true)"
+    if [[ "${boot_mode}" != "bios" ]]; then
+        local efi_fs
+        efi_fs="$(blkid -o value -s TYPE "${efi_part}" 2>/dev/null || true)"
 
-    case "${efi_fs}" in
-        vfat|fat32)
-            ;;
-        *)
-            die "EFI partition is not FAT32 (detected: ${efi_fs:-unknown})"
-            ;;
-    esac
+        case "${efi_fs}" in
+            vfat|fat32) ;;
+            *) die "EFI partition is not FAT32 (detected: ${efi_fs:-unknown})" ;;
+        esac
 
-    log_info "Mounting EFI partition..."
-    mount -t vfat --mkdir "${efi_part}" "${efi_mount}"
-    mountpoint -q "${efi_mount}" || die 'failed to mount EFI partition'
+        log_info "Mounting EFI partition..."
+        mount -t vfat --mkdir "${efi_part}" "${efi_mount}"
+        mountpoint -q "${efi_mount}" || die 'failed to mount EFI partition'
+    fi
 
     log_info "Mount setup completed."
 }

@@ -3,34 +3,46 @@ set -Eeuo pipefail
 
 create_filesystems() {
     _require_tools mkfs.fat mkfs.ext4 blkid partprobe wipefs
-    local disk fs_type swap_enabled
+    local disk fs_type swap_enabled boot_mode
     disk="$(state_get DISK)"
     [[ -b "${disk}" ]] || die "invalid disk: ${disk}"
     fs_type="$(state_get FS_TYPE)"
     swap_enabled="$(state_get SWAP_ENABLED no)"
+    boot_mode="${VFF_BOOT_MODE:-${ARTIX_BOOT_MODE:-uefi}}"
 
     local efi_part swap_part root_part
 
-    # Manual mode: use user-specified partitions
-    if [[ -n "$(state_get EFI_PART '')" ]]; then
-        efi_part="$(state_get EFI_PART)"
+    if [[ -n "$(state_get EFI_PART '')" ]] || [[ -n "$(state_get ROOT_PART '')" ]]; then
+        efi_part="$(state_get EFI_PART '')"
         root_part="$(state_get ROOT_PART)"
         if [[ "$(state_get SWAP_ENABLED no)" == "yes" ]]; then
-            swap_part="$(state_get SWAP_PART)"
+            swap_part="$(state_get SWAP_PART '')"
         fi
     else
-        efi_part=$(get_partition_name "${disk}" 1)
-        if [[ "${swap_enabled}" == 'yes' ]]; then
-            swap_part=$(get_partition_name "${disk}" 2)
-            root_part=$(get_partition_name "${disk}" 3)
+        if [[ "${boot_mode}" == "bios" ]]; then
+            if [[ "${swap_enabled}" == 'yes' ]]; then
+                swap_part=$(get_partition_name "${disk}" 1)
+                root_part=$(get_partition_name "${disk}" 2)
+            else
+                root_part=$(get_partition_name "${disk}" 1)
+            fi
         else
-            root_part=$(get_partition_name "${disk}" 2)
+            efi_part=$(get_partition_name "${disk}" 1)
+            if [[ "${swap_enabled}" == 'yes' ]]; then
+                swap_part=$(get_partition_name "${disk}" 2)
+                root_part=$(get_partition_name "${disk}" 3)
+            else
+                root_part=$(get_partition_name "${disk}" 2)
+            fi
         fi
     fi
 
-    [[ -b "${efi_part}" ]] || die "invalid EFI partition: ${efi_part}"
+    if [[ "${boot_mode}" != "bios" ]]; then
+        [[ -b "${efi_part}" ]] || die "invalid EFI partition: ${efi_part}"
+        [[ "/dev/$(lsblk -no PKNAME "${efi_part}")" == "${disk}" ]] || die "EFI partition does not belong to selected disk"
+    fi
+
     [[ -b "${root_part}" ]] || die "invalid root partition: ${root_part}"
-    [[ "/dev/$(lsblk -no PKNAME "${efi_part}")" == "${disk}" ]] || die "EFI partition does not belong to selected disk"
     if [[ "$(state_get USE_LVM no)" != "yes" ]]; then
         [[ "/dev/$(lsblk -no PKNAME "${root_part}")" == "${disk}" ]] || die "Root partition does not belong to selected disk"
     fi
@@ -51,23 +63,27 @@ create_filesystems() {
     esac
 
     log_info "Wiping old filesystem signatures..."
-    wipefs -af "${efi_part}" || true
+    if [[ "${boot_mode}" != "bios" ]]; then
+        wipefs -af "${efi_part}" || true
+    fi
     if [[ "$(state_get USE_LUKS no)" != "yes" ]]; then
         wipefs -af "${root_part}" || true
     fi
-    if [[ "${swap_enabled}" == 'yes' ]]; then
+    if [[ "${swap_enabled}" == 'yes' && -n "${swap_part:-}" ]]; then
         wipefs -af "${swap_part}" || true
     fi
 
-    log_info "Formatting EFI partition..."
-    mkfs.fat -F32 "${efi_part}" || die 'Failed to create FAT32 EFI filesystem'
-    partprobe "${disk}" || true
-    udevadm settle || true
-    if ! blkid -o value -s TYPE "${efi_part}" | grep -qi 'vfat'; then
-        die "EFI partition ${efi_part} does not have a vfat signature"
+    if [[ "${boot_mode}" != "bios" ]]; then
+        log_info "Formatting EFI partition..."
+        mkfs.fat -F32 "${efi_part}" || die 'Failed to create FAT32 EFI filesystem'
+        partprobe "${disk}" || true
+        udevadm settle || true
+        if ! blkid -o value -s TYPE "${efi_part}" | grep -qi 'vfat'; then
+            die "EFI partition ${efi_part} does not have a vfat signature"
+        fi
     fi
 
-    if [[ "${swap_enabled}" == 'yes' ]]; then
+    if [[ "${swap_enabled}" == 'yes' && -n "${swap_part:-}" ]]; then
         log_info "Initializing swap..."
         [[ -b "${swap_part}" ]] || die "invalid swap partition: ${swap_part}"
         mkswap "${swap_part}"

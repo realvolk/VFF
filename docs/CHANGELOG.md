@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.1.0.0 (2026-06-29) — VFF
+
+### Added
+- **BIOS/Legacy boot support** — MBR partitioning, GRUB i386-pc installation, no ESP requirement; all storage modules and bootloader now branch on `VFF_BOOT_MODE` (`lib/fs/partition.sh`, `lib/fs/filesystem.sh`, `lib/fs/mount.sh`, `lib/boot/grub.sh`)
+- **Boot mode detection** — `VFF_BOOT_MODE` set to `uefi` or `bios` based on `/sys/firmware/efi`; falls back to `ARTIX_BOOT_MODE` for backward compatibility
+
 ## v2.0.0.0 (2026-06-29) — forge-tui & Power User Upgrade
 
 ### Changed

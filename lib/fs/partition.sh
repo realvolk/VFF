@@ -1,26 +1,25 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Volk's Forge Framework – GPT partitioning with optional swap, LUKS, and LVM
+# Volk's Forge Framework – GPT/MBR partitioning with optional swap, LUKS, and LVM
 
 partition_disk() {
     _require_tools sgdisk wipefs dd blockdev partprobe cryptsetup pvcreate vgcreate lvcreate
-    local disk swap_enabled='no' swap_size='0'
+    local disk swap_enabled='no' swap_size='0' boot_mode
     disk="$(state_get DISK)"
     [[ -n "${disk}" ]] || die 'no disk selected'
     [[ -b "${disk}" ]] || die 'invalid disk device'
 
-    if tui_yesno "Swap Partition" "Would you like to create a swap partition?"; then
-        swap_enabled='yes'
-        local mem_gib=$(awk '/MemTotal/ {printf "%d", ($2 / 1024 / 1024) + 1}' /proc/meminfo)
-        if [[ "${mem_gib}" -le 8 ]]; then swap_size='4G'
-        elif [[ "${mem_gib}" -le 16 ]]; then swap_size='8G'
-        else swap_size='16G'; fi
-        swap_size=$(tui_input "Swap Size" $'Recommended swap size: '"${swap_size}"$'\n\nEnter desired swap size:' "${swap_size}")
-        [[ -n "${swap_size}" ]] || die 'invalid swap size'
+    boot_mode="${VFF_BOOT_MODE:-${ARTIX_BOOT_MODE:-uefi}}"
+
+    # If manual partitions were set, skip auto-partitioning entirely
+    if [[ -n "$(state_get EFI_PART '')" ]] || [[ -n "$(state_get ROOT_PART '')" ]]; then
+        log_info "Manual partition layout detected — skipping auto-partitioning"
+        return 0
     fi
-    state_set SWAP_ENABLED "${swap_enabled}"
-    state_set SWAP_SIZE "${swap_size}"
+
+    swap_enabled="$(state_get SWAP_ENABLED no)"
+    swap_size="$(state_get SWAP_SIZE 0)"
 
     log_info "Preparing disk ${disk}..."
     swapoff -a 2>/dev/null || true
@@ -31,44 +30,77 @@ partition_disk() {
 
     log_info "Wiping existing signatures..."
     wipefs --all --force "${disk}"
-    sgdisk --zap-all "${disk}"
+    sgdisk --zap-all "${disk}" 2>/dev/null || true
     dd if=/dev/zero of="${disk}" bs=1M count=32 conv=fsync status=none
     blockdev --rereadpt "${disk}" 2>/dev/null || true
 
-    log_info "Creating GPT partition layout..."
-    sgdisk -n 1:0:+1024M -t 1:ef00 "${disk}"
-    if [[ "${swap_enabled}" == 'yes' ]]; then
-        sgdisk -n 2:0:+"${swap_size}" -t 2:8200 "${disk}"
-        sgdisk -n 3:0:0 -t 3:8300 "${disk}"
-    else
-        sgdisk -n 2:0:0 -t 2:8300 "${disk}"
-    fi
+    if [[ "${boot_mode}" == "bios" ]]; then
+        log_info "Creating MBR partition layout (BIOS)..."
+        parted -s "${disk}" mklabel msdos
 
-    partprobe "${disk}" 2>/dev/null || true
-    udevadm settle
-    sleep 2
-    blockdev --rereadpt "${disk}" 2>/dev/null || true
+        if [[ "${swap_enabled}" == 'yes' && "${swap_size}" != "0" ]]; then
+            parted -s "${disk}" mkpart primary linux-swap 1MiB "${swap_size}"
+            parted -s "${disk}" mkpart primary "${swap_size}" 100%
+        else
+            parted -s "${disk}" mkpart primary 1MiB 100%
+        fi
 
-    [[ -b "$(get_partition_name "${disk}" 1)" ]] || die 'EFI partition not created'
-    if [[ "${swap_enabled}" == 'yes' ]]; then
-        [[ -b "$(get_partition_name "${disk}" 2)" ]] || die 'swap partition not created'
-        [[ -b "$(get_partition_name "${disk}" 3)" ]] || die 'root partition not created'
+        partprobe "${disk}" 2>/dev/null || true
+        udevadm settle
+        sleep 2
+
+        if [[ "${swap_enabled}" == 'yes' && "${swap_size}" != "0" ]]; then
+            [[ -b "$(get_partition_name "${disk}" 1)" ]] || die 'swap partition not created'
+            [[ -b "$(get_partition_name "${disk}" 2)" ]] || die 'root partition not created'
+        else
+            [[ -b "$(get_partition_name "${disk}" 1)" ]] || die 'root partition not created'
+        fi
     else
-        [[ -b "$(get_partition_name "${disk}" 2)" ]] || die 'root partition not created'
+        log_info "Creating GPT partition layout (UEFI)..."
+        sgdisk -n 1:0:+1024M -t 1:ef00 "${disk}"
+        if [[ "${swap_enabled}" == 'yes' && "${swap_size}" != "0" ]]; then
+            sgdisk -n 2:0:+"${swap_size}" -t 2:8200 "${disk}"
+            sgdisk -n 3:0:0 -t 3:8300 "${disk}"
+        else
+            sgdisk -n 2:0:0 -t 2:8300 "${disk}"
+        fi
+
+        partprobe "${disk}" 2>/dev/null || true
+        udevadm settle
+        sleep 2
+        blockdev --rereadpt "${disk}" 2>/dev/null || true
+
+        [[ -b "$(get_partition_name "${disk}" 1)" ]] || die 'EFI partition not created'
+        if [[ "${swap_enabled}" == 'yes' && "${swap_size}" != "0" ]]; then
+            [[ -b "$(get_partition_name "${disk}" 2)" ]] || die 'swap partition not created'
+            [[ -b "$(get_partition_name "${disk}" 3)" ]] || die 'root partition not created'
+        else
+            [[ -b "$(get_partition_name "${disk}" 2)" ]] || die 'root partition not created'
+        fi
     fi
 
     if [[ "$(state_get USE_LVM no)" == "yes" ]]; then
         log_info "Setting up LVM..."
         local root_part
-        if [[ "${swap_enabled}" == 'yes' ]]; then
-            root_part=$(get_partition_name "${disk}" 3)
+        if [[ "${boot_mode}" == "bios" ]]; then
+            if [[ "${swap_enabled}" == 'yes' && "${swap_size}" != "0" ]]; then
+                root_part=$(get_partition_name "${disk}" 2)
+            else
+                root_part=$(get_partition_name "${disk}" 1)
+            fi
         else
-            root_part=$(get_partition_name "${disk}" 2)
+            if [[ "${swap_enabled}" == 'yes' && "${swap_size}" != "0" ]]; then
+                root_part=$(get_partition_name "${disk}" 3)
+            else
+                root_part=$(get_partition_name "${disk}" 2)
+            fi
         fi
 
-        sgdisk -t "$(lsblk -no PARTN "${root_part}" | head -n1)":8e00 "${disk}"
-        partprobe "${disk}" 2>/dev/null || true
-        udevadm settle
+        if [[ "${boot_mode}" != "bios" ]]; then
+            sgdisk -t "$(lsblk -no PARTN "${root_part}" | head -n1)":8e00 "${disk}"
+            partprobe "${disk}" 2>/dev/null || true
+            udevadm settle
+        fi
 
         local lvm_target="${root_part}"
 
