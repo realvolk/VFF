@@ -4,7 +4,7 @@ set -Eeuo pipefail
 tui_select_disk() {
     local disk disks=()
     local lsblk_output
-    lsblk_output=$(lsblk -dpno NAME,SIZE,MODEL -e 7 2>/dev/null || true)
+    lsblk_output=$(lsblk -dpno NAME,SIZE,MODEL -e 7 2>/dev/null | grep -v -E 'sr[0-9]|loop[0-9]' || true)
     while IFS=' ' read -r name size model; do
         [[ -n "${name}" ]] || continue
         disks+=("${name} - ${size} (${model:-Unknown})")
@@ -25,7 +25,6 @@ tui_partition_setup() {
     [[ -b "${disk}" ]] || die "No disk selected"
     boot_mode="${VFF_BOOT_MODE:-uefi}"
 
-    # BIOS mode notification
     if [[ "${boot_mode}" == "bios" ]]; then
         tui_msg_quick "BIOS Mode" "Legacy BIOS boot detected. UEFI-only features are disabled."
     fi
@@ -52,7 +51,6 @@ tui_partition_setup() {
         return 0
     fi
 
-    # Manual partition selection
     local -a parts=()
     while IFS= read -r line; do
         parts+=("$line")
@@ -183,7 +181,6 @@ vff_collect_config() {
     tui_select_from_profile "Kernel" "KERNEL_CHOICES" "KERNEL_CHOICE" "gentoo-kernel"
     tui_select_from_profile "Init" "INIT_SYSTEMS" "INIT" "${INIT_SYSTEMS[0]:-openrc}"
 
-    # Bootloader selection respects boot mode
     if [[ "${VFF_BOOT_MODE:-uefi}" == "bios" ]]; then
         state_set BOOTLOADER "grub"
         state_set GENERATE_UKI "no"
