@@ -138,3 +138,17 @@ tui_edit() {
     printf '\e[1;%sm── %s ──\e[0m\n' "$(_theme_ansi_code "${VFF_TITLE_COLOR}")" "${title}" >&2
     _forge '{"widget":"text","title":"'"${title//\"/\\\"}"'","file":"'"${file}"'"}' >/dev/null
 }
+
+tui_multiselect() {
+    local title="${1}" msg="${2}" placeholder="${3:-}" min="${4:-0}" max="${5:-0}"
+    shift 5 2>/dev/null || shift 3
+    local choices_json
+    choices_json=$(printf '%s\n' "$@" | jq -R . | jq -s .)
+    local json
+    json='{"widget":"multiselect","title":"'"${title//\"/\\\"}"'","message":"'"${msg//\"/\\\"}"'","choices":'"${choices_json}"''
+    [[ -n "$placeholder" ]] && json+=',"placeholder":"'"${placeholder//\"/\\\"}"'"'
+    [[ "$min" != "0" ]] && json+=',"min":'"${min}"
+    [[ "$max" != "0" ]] && json+=',"max":'"${max}"
+    json+='}'
+    _forge_result "$json"
+}

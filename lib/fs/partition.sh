@@ -97,9 +97,15 @@ partition_disk() {
         fi
 
         if [[ "${boot_mode}" != "bios" ]]; then
-            sgdisk -t "$(lsblk -no PARTN "${root_part}" | head -n1)":8e00 "${disk}"
-            partprobe "${disk}" 2>/dev/null || true
-            udevadm settle
+            local part_num
+            part_num=$(lsblk -no PARTN "${root_part}" 2>/dev/null | head -n1 | tr -d ' ')
+            if [[ -n "${part_num}" && "${part_num}" =~ ^[0-9]+$ ]]; then
+                sgdisk -t "${part_num}:8e00" "${disk}"
+                partprobe "${disk}" 2>/dev/null || true
+                udevadm settle
+            else
+                log_warn "Could not determine partition number for ${root_part}, skipping GPT type change"
+            fi
         fi
 
         local lvm_target="${root_part}"
