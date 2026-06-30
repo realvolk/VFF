@@ -11,6 +11,8 @@ set -Eeuo pipefail
 : "${VFF_COLOR_SUCCESS:=34}"
 
 FORGE_TUI="${FORGE_TUI:-forge-tui}"
+FORGE_TUI_SOCKET="${FORGE_TUI_SOCKET:-/tmp/forge-tui.sock}"
+FORGE_TUI_DAEMON="${FORGE_TUI_DAEMON:-}"
 
 _theme_ansi_code() { printf '38;5;%s' "${1:-212}"; }
 _theme_ansi()      { printf '\e[%sm' "$(_theme_ansi_code "${1:-212}")"; }
