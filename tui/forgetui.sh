@@ -154,3 +154,13 @@ tui_multiselect() {
     json+='}'
     _forge_result "$json"
 }
+
+tui_hub() {
+    local title="${1}" categories_json="${2}" actions_json="${3}" quick_profile="${4:-}" sanity="${5:-}"
+    local json
+    json='{"widget":"hub","title":"'"${title//\"/\\\"}"'","categories":'"${categories_json}"',"actions":'"${actions_json}"''
+    [[ -n "$quick_profile" ]] && json+=',"quick_profile":"'"${quick_profile}"'"'
+    [[ -n "$sanity" ]] && json+=',"sanity":"'"${sanity}"'"'
+    json+='}'
+    _forge_result "$json"
+}
